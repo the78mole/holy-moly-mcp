@@ -13,7 +13,7 @@ dependencies = [
   "fastmcp",
   "fastapi",
   "uvicorn",
-  "openai",
+  "faster-whisper",
   "pydantic",
   "httpx",
   "python-multipart",
