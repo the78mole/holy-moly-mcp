@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from src.services.converter import process_audio, process_pdf_placeholder
 
 app = FastAPI(title="Holy Moly Web Suite")
+DEFAULT_UPLOAD_AUDIO_FILENAME = "upload.wav"
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +38,7 @@ async def convert_speech_to_text_api(
     """Transcribe uploaded audio file into text."""
     try:
         payload = await file.read()
-        transcript = await process_audio(payload, file.filename or "upload.wav", mode)
+        transcript = await process_audio(payload, file.filename or DEFAULT_UPLOAD_AUDIO_FILENAME, mode)
         return {"result": transcript, "mode": mode}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

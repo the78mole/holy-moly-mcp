@@ -6,6 +6,13 @@ const mode = ref('plain')
 const loading = ref(false)
 const output = ref('')
 const error = ref('')
+const uiText = {
+  emptyDropLabel: 'Datei hier ablegen oder klicken, um eine Datei auszuwählen',
+  selectedPrefix: 'Ausgewählt',
+  pickFileError: 'Bitte zuerst eine Datei auswählen.',
+  genericError: 'Konvertierung fehlgeschlagen.',
+  unknownError: 'Unbekannter Fehler',
+}
 
 const acceptedTypes = '.mp3,.ogg,.wav,.m4a,.pdf'
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || ''
@@ -19,7 +26,7 @@ const endpoint = computed(() =>
 )
 
 const dropLabel = computed(() =>
-  file.value ? `Ausgewählt: ${file.value.name}` : 'Datei hier ablegen oder klicken, um eine Datei auszuwählen',
+  file.value ? `${uiText.selectedPrefix}: ${file.value.name}` : uiText.emptyDropLabel,
 )
 
 function onDrop(event) {
@@ -41,7 +48,7 @@ function onSelect(event) {
 
 async function convert() {
   if (!file.value) {
-    error.value = 'Bitte zuerst eine Datei auswählen.'
+    error.value = uiText.pickFileError
     return
   }
 
@@ -65,12 +72,12 @@ async function convert() {
     const data = await response.json()
 
     if (!response.ok) {
-      throw new Error(data.detail || 'Konvertierung fehlgeschlagen.')
+      throw new Error(data.detail || uiText.genericError)
     }
 
     output.value = data.result || ''
   } catch (requestError) {
-    error.value = requestError instanceof Error ? requestError.message : 'Unbekannter Fehler'
+    error.value = requestError instanceof Error ? requestError.message : uiText.unknownError
   } finally {
     loading.value = false
   }

@@ -16,6 +16,7 @@ from openai import AsyncOpenAI
 
 ALLOWED_AUDIO_EXTENSIONS: set[str] = {".m4a", ".mp3", ".ogg", ".wav"}
 MAX_DOWNLOAD_SIZE_BYTES = 100 * 1024 * 1024
+DEFAULT_AUDIO_FILENAME = "downloaded-audio.wav"
 
 
 class TranscriptionMode(str, Enum):
@@ -100,7 +101,7 @@ async def process_audio_from_path(file_path: str, mode: str | TranscriptionMode)
 async def download_audio_from_url(url: str) -> tuple[bytes, str]:
     """Download remote audio input asynchronously with basic safety limits."""
     parsed = urlparse(url)
-    filename = Path(parsed.path).name or "downloaded-audio.wav"
+    filename = Path(parsed.path).name or DEFAULT_AUDIO_FILENAME
     extension = Path(filename).suffix.lower()
     if extension and extension not in ALLOWED_AUDIO_EXTENSIONS:
         raise ValueError(
@@ -132,7 +133,7 @@ async def download_audio_from_url(url: str) -> tuple[bytes, str]:
     if extension:
         resolved_filename = filename
     else:
-        resolved_filename = "downloaded-audio.wav"
+        resolved_filename = DEFAULT_AUDIO_FILENAME
 
     return b"".join(chunks), resolved_filename
 
