@@ -21,8 +21,9 @@ from fastapi.staticfiles import StaticFiles
 
 from src.services.converter import (
     MODEL_METADATA,
-    WHISPER_MODELS,
     get_active_model_name,
+    get_available_languages,
+    get_available_models,
     get_model_cache_path,
     get_model_status,
     is_model_cached,
@@ -128,7 +129,7 @@ async def model_status_stream():
 
 @app.get("/api/v1/model/info")
 async def model_info():
-    """Return the active model, device info, and enriched model list."""
+    """Return the active model, device info, enriched model list, and available languages."""
     device = os.environ.get("HOLY_MOLY_DEVICE", "cpu")
     compute_type = os.environ.get("HOLY_MOLY_COMPUTE_TYPE", "int8")
     return {
@@ -142,8 +143,9 @@ async def model_info():
                 "path": get_model_cache_path(m),
                 **MODEL_METADATA.get(m, {}),
             }
-            for m in WHISPER_MODELS
+            for m in get_available_models()
         ],
+        "languages": get_available_languages(),
     }
 
 
@@ -176,11 +178,17 @@ async def system_info():
 async def convert_speech_to_text_api(
     file: UploadFile = File(...),
     mode: str = Query(default="plain"),
+    language: str | None = Query(default=None),
 ) -> dict[str, str]:
     """Transcribe uploaded audio file into text."""
     try:
         payload = await file.read()
-        transcript = await process_audio(payload, file.filename or DEFAULT_UPLOAD_AUDIO_FILENAME, mode)
+        transcript = await process_audio(
+            payload,
+            file.filename or DEFAULT_UPLOAD_AUDIO_FILENAME,
+            mode,
+            language=language or None,
+        )
         return {"result": transcript, "mode": mode}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

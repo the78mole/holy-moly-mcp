@@ -10,6 +10,30 @@ const activeSection = ref('speech')
 const speakerRecognition = ref(false)
 const audioTypes = '.mp3,.ogg,.wav,.m4a,.flac,.mp4'
 
+// Language selection
+const language = ref(null)           // null = auto-detect
+const availableLanguages = ref([])   // populated from API
+
+const LANGUAGE_LABELS = {
+  af: 'Afrikaans', ar: 'العربية', bg: 'Български', ca: 'Català',
+  cs: 'Čeština', cy: 'Cymraeg', da: 'Dansk', de: 'Deutsch',
+  el: 'Ελληνικά', en: 'English', es: 'Español', et: 'Eesti',
+  fa: 'فارسی', fi: 'Suomi', fr: 'Français', gl: 'Galego',
+  he: 'עברית', hi: 'हिन्दी', hr: 'Hrvatski', hu: 'Magyar',
+  hy: 'Հայերեն', id: 'Indonesia', is: 'Íslenska', it: 'Italiano',
+  ja: '日本語', ka: 'ქართული', kk: 'Қазақша', ko: '한국어',
+  lt: 'Lietuvių', lv: 'Latviešu', mk: 'Македонски', ms: 'Melayu',
+  nl: 'Nederlands', no: 'Norsk', pl: 'Polski', pt: 'Português',
+  ro: 'Română', ru: 'Русский', sk: 'Slovenčina', sl: 'Slovenščina',
+  sq: 'Shqip', sr: 'Српски', sv: 'Svenska', sw: 'Kiswahili',
+  th: 'ภาษาไทย', tr: 'Türkçe', uk: 'Українська', ur: 'اردو',
+  vi: 'Tiếng Việt', zh: '中文',
+}
+
+function langLabel(code) {
+  return LANGUAGE_LABELS[code] ? `${LANGUAGE_LABELS[code]} (${code})` : code.toUpperCase()
+}
+
 // Model status (SSE)
 const modelPhase = ref('idle')
 const modelProgress = ref(0)
@@ -98,6 +122,7 @@ async function fetchModelInfo() {
     availableModels.value = data.models ?? []
     activeModel.value = data.active ?? ''
     deviceInfo.value = { device: data.device ?? 'cpu', compute_type: data.compute_type ?? 'int8' }
+    if (data.languages?.length) availableLanguages.value = data.languages
     if (!selectedModel.value) selectedModel.value = data.active ?? ''
   } catch (_) {}
 }
@@ -177,9 +202,12 @@ async function convert() {
   try {
     const formData = new FormData()
     formData.append('file', file.value)
-    const requestUrl = isPdf.value
-      ? endpoint.value
-      : `${endpoint.value}?mode=${encodeURIComponent(mode.value)}`
+    let requestUrl = endpoint.value
+    if (!isPdf.value) {
+      const params = new URLSearchParams({ mode: mode.value })
+      if (language.value) params.set('language', language.value)
+      requestUrl = `${endpoint.value}?${params.toString()}`
+    }
     const response = await fetch(requestUrl, { method: 'POST', body: formData })
     const data = await response.json()
     if (!response.ok) throw new Error(data.detail || uiText.genericError)
@@ -191,8 +219,13 @@ async function convert() {
   }
 }
 
+const copied = ref(false)
+
 async function copyOutput() {
-  if (output.value) await navigator.clipboard.writeText(output.value)
+  if (!output.value) return
+  await navigator.clipboard.writeText(output.value)
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 1500)
 }
 </script>
 
@@ -340,6 +373,15 @@ async function copyOutput() {
                     <span class="toggle__slider" />
                   </label>
                 </div>
+                <div class="option-row">
+                  <span class="option-label">Sprache</span>
+                  <select class="lang-select" v-model="language">
+                    <option :value="null">Automatisch</option>
+                    <option v-for="lang in availableLanguages" :key="lang" :value="lang">
+                      {{ langLabel(lang) }}
+                    </option>
+                  </select>
+                </div>
               </div>
 
               <label class="dropzone" @dragover.prevent @drop="onDrop">
@@ -357,7 +399,11 @@ async function copyOutput() {
               <section v-if="output" class="result">
                 <div class="result-header">
                   <span>Ergebnis</span>
-                  <button @click="copyOutput">Kopieren</button>
+                  <button
+                    class="btn-copy"
+                    :class="{ 'btn-copy--done': copied }"
+                    @click="copyOutput"
+                  >{{ copied ? '✓ Kopiert' : 'Kopieren' }}</button>
                 </div>
                 <pre>{{ output }}</pre>
               </section>
@@ -620,6 +666,23 @@ async function copyOutput() {
   letter-spacing: 0.06em;
 }
 
+/* ── Language select ────────────────────────────────────────────────────── */
+.lang-select {
+  background: #0c0e22;
+  border: 1px solid #1e2244;
+  border-radius: 7px;
+  color: #a5b4fc;
+  font-size: 0.76rem;
+  padding: 0.28rem 0.55rem;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.lang-select:focus {
+  border-color: #4f5db0;
+}
+
 /* ── Segmented mode ─────────────────────────────────────────────────────── */
 .mode-segmented {
   display: flex;
@@ -859,6 +922,16 @@ button:disabled {
   background: #0c0e22;
   border-color: #1e2244;
   color: #7c7f99;
+}
+
+.btn-copy {
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn-copy--done {
+  background: #14301a !important;
+  border-color: #2a6b38 !important;
+  color: #4ade80 !important;
 }
 
 pre {

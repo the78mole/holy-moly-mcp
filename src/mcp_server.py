@@ -51,6 +51,7 @@ class SpeechToolRequest(BaseModel):
     file_path: Optional[str] = None
     url: Optional[HttpUrl] = None
     mode: TranscriptionMode = TranscriptionMode.PLAIN
+    language: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_source(self) -> "SpeechToolRequest":
@@ -65,16 +66,25 @@ async def convert_speech_to_text(
     file_path: Optional[str] = None,
     url: Optional[HttpUrl] = None,
     mode: TranscriptionMode = TranscriptionMode.PLAIN,
+    language: Optional[str] = None,
 ) -> str:
-    """Convert speech audio to text from a local file path or remote URL."""
+    """Convert speech audio to text from a local file path or remote URL.
+
+    Args:
+        file_path: Absolute path to a local audio file.
+        url: URL of a remote audio file.
+        mode: Transcription mode – ``plain`` (default) or ``minutes``.
+        language: ISO 639-1 language code (e.g. ``de``, ``en``, ``fr``).
+                  Omit or pass ``null`` to let the model auto-detect.
+    """
     try:
-        request = SpeechToolRequest(file_path=file_path, url=url, mode=mode)
+        request = SpeechToolRequest(file_path=file_path, url=url, mode=mode, language=language)
 
         if request.file_path:
-            return await process_audio_from_path(request.file_path, request.mode)
+            return await process_audio_from_path(request.file_path, request.mode, language=request.language)
 
         if request.url:
-            return await process_audio_from_url(str(request.url), request.mode)
+            return await process_audio_from_url(str(request.url), request.mode, language=request.language)
 
         return "Speech-to-text conversion failed: no source was provided."
     except ValidationError as error:
