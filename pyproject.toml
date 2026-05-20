@@ -4,17 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "holy-moly-mcp"
-version = "0.1.0"
-description = "Universal X-to-AI and AI-to-X conversion bridge MCP server"
+version = "0.2.0"
+description = "Universal X-to-AI and AI-to-X conversion bridge for MCP and web usage"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "mcp[cli]",
   "fastmcp",
+  "fastapi",
+  "uvicorn",
   "openai",
   "pydantic",
   "httpx",
+  "python-multipart",
 ]
 
 [project.scripts]
-holy-moly = "mcp_server:main"
+holy-moly-mcp = "src.mcp_server:main"
+holy-moly-web = "src.web_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
