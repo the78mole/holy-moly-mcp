@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "holy-moly-mcp"
+version = "0.1.0"
+description = "Universal X-to-AI and AI-to-X conversion bridge MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp[cli]",
+  "fastmcp",
+  "openai",
+  "pydantic",
+  "httpx",
+]
+
+[project.scripts]
+holy-moly = "mcp_server:main"
