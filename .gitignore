@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# Whisper model cache (bind-mounted into Docker)
+whisper-models/
+
 # Frontend dependencies and build artifacts
 frontend/node_modules/
 frontend/dist/

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import sys
 import traceback
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
 
 from fastmcp import FastMCP
+from fastmcp.server.providers.base import Provider
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, model_validator
 
 from src.services.converter import (
@@ -14,9 +16,31 @@ from src.services.converter import (
     process_audio_from_path,
     process_audio_from_url,
     process_pdf_placeholder,
+    start_model_loading,
 )
 
+
+class _ModelStartupProvider(Provider):
+    """Triggers faster-whisper model loading when the MCP session starts.
+
+    The model name and hardware settings are read from the environment variables
+    that the MCP client sets in its ``mcp.json``::
+
+        "env": {
+            "HOLY_MOLY_WHISPER_MODEL": "small",
+            "HOLY_MOLY_DEVICE": "cpu",
+            "HOLY_MOLY_COMPUTE_TYPE": "int8"
+        }
+    """
+
+    @asynccontextmanager
+    async def lifespan(self) -> AsyncIterator[None]:
+        await start_model_loading()
+        yield
+
+
 mcp = FastMCP("Holy-Moly-Converter")
+mcp.add_provider(_ModelStartupProvider())
 
 
 class SpeechToolRequest(BaseModel):

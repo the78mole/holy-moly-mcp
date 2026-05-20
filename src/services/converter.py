@@ -175,6 +175,12 @@ def is_model_cached(model_name: str) -> bool:
     return candidate.exists() and any(candidate.iterdir())
 
 
+def get_model_cache_path(model_name: str) -> str:
+    """Return the expected HuggingFace cache directory for a faster-whisper model."""
+    hf_cache = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    return str(hf_cache / f"models--Systran--faster-whisper-{model_name}")
+
+
 async def switch_model(model_name: str) -> None:
     """Unload the current model and load a different one."""
     global _load_started

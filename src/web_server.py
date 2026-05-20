@@ -23,6 +23,7 @@ from src.services.converter import (
     MODEL_METADATA,
     WHISPER_MODELS,
     get_active_model_name,
+    get_model_cache_path,
     get_model_status,
     is_model_cached,
     process_audio,
@@ -135,7 +136,12 @@ async def model_info():
         "device": device,
         "compute_type": compute_type,
         "models": [
-            {"name": m, "cached": is_model_cached(m), **MODEL_METADATA.get(m, {})}
+            {
+                "name": m,
+                "cached": is_model_cached(m),
+                "path": get_model_cache_path(m),
+                **MODEL_METADATA.get(m, {}),
+            }
             for m in WHISPER_MODELS
         ],
     }
