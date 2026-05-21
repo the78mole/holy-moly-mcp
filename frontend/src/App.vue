@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 const file = ref(null)
 const mode = ref('plain')
@@ -176,8 +176,8 @@ function connectModelStatus() {
   }
 }
 
-onMounted(() => { fetchModelInfo(); fetchSystemInfo(); connectModelStatus() })
-onUnmounted(() => { eventSource?.close() })
+onMounted(() => { fetchModelInfo(); fetchSystemInfo(); connectModelStatus(); fetchTtsVoices(); fetchTtsModelInfo(); connectTtsModelStatus() })
+onUnmounted(() => { eventSource?.close(); ttsEventSource?.close() })
 
 // ── file handling ────────────────────────────────────────────────────────────
 
@@ -227,6 +227,162 @@ async function copyOutput() {
   copied.value = true
   setTimeout(() => { copied.value = false }, 1500)
 }
+
+// ── TTS model state ─────────────────────────────────────────────────────────
+
+const availableTtsModels = ref([])
+const activeTtsModel = ref('')
+const selectedTtsModel = ref('')
+const ttsModelPhase = ref('idle')    // idle | loading | ready | error
+const ttsModelProgress = ref(0)
+const ttsModelMessage = ref('')
+let ttsEventSource = null
+
+const ttsModelReady = computed(() => ttsModelPhase.value === 'ready')
+const ttsModelLoading = computed(() => ttsModelPhase.value === 'loading')
+const ttsModelError = computed(() => ttsModelPhase.value === 'error')
+const ttsProgressBarStyle = computed(() => ({ width: `${ttsModelProgress.value}%` }))
+const selectedTtsModelMeta = computed(() =>
+  availableTtsModels.value.find(m => m.name === selectedTtsModel.value) ?? null)
+
+async function fetchTtsModelInfo() {
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/v1/tts/model/info`)
+    if (!res.ok) return
+    const data = await res.json()
+    availableTtsModels.value = data.models ?? []
+    activeTtsModel.value = data.active ?? ''
+    if (!selectedTtsModel.value) selectedTtsModel.value = data.active ?? ''
+  } catch (_) {}
+}
+
+async function applyTtsModelSelection() {
+  if (!selectedTtsModel.value || selectedTtsModel.value === activeTtsModel.value) return
+  await fetch(`${apiBaseUrl}/api/v1/tts/model/load`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: selectedTtsModel.value }),
+  })
+  ttsEventSource?.close()
+  ttsEventSource = null
+  connectTtsModelStatus()
+}
+
+function connectTtsModelStatus() {
+  if (ttsEventSource) return
+  ttsEventSource = new EventSource(`${apiBaseUrl}/api/v1/tts/model/status`)
+  ttsEventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      ttsModelPhase.value = data.phase
+      ttsModelProgress.value = data.progress ?? 0
+      ttsModelMessage.value = data.message ?? ''
+      if (data.model) activeTtsModel.value = data.model
+      if (data.phase === 'ready' || data.phase === 'error') {
+        ttsEventSource.close(); ttsEventSource = null
+        fetchTtsModelInfo()
+      }
+    } catch (_) {}
+  }
+  ttsEventSource.onerror = () => {
+    if (ttsModelPhase.value !== 'ready') {
+      ttsEventSource?.close(); ttsEventSource = null
+      setTimeout(connectTtsModelStatus, 2000)
+    }
+  }
+}
+
+// ── TTS state ─────────────────────────────────────────────────────────────
+
+const ttsVoices = ref([])        // [{ id, name, lang }]
+const selectedVoice = ref('')
+const ttsText = ref('')
+const ttsState = ref('idle')     // idle | loading | streaming | done | error
+const ttsError = ref('')
+const audioSrc = ref('')
+const ttsTaskId = ref('')
+const audioEl = ref(null)
+
+const ttsVoicesByLang = computed(() => {
+  const langLabels = {
+    'en-us': '🇺🇸 English (US)',
+    'en-gb': '🇬🇧 English (UK)',
+    'de':    '🇩🇪 Deutsch',
+    'fr-fr': '🇫🇷 Français',
+    'it':    '🇮🇹 Italiano',
+  }
+  const groups = new Map()
+  for (const v of ttsVoices.value) {
+    const label = langLabels[v.lang] ?? v.lang
+    if (!groups.has(label)) groups.set(label, [])
+    groups.get(label).push(v)
+  }
+  return groups
+})
+
+async function fetchTtsVoices() {
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/v1/convert/text-to-speech/models`)
+    if (!res.ok) return
+    const data = await res.json()
+    ttsVoices.value = data.voices ?? []
+    if (ttsVoices.value.length > 0 && !selectedVoice.value) {
+      selectedVoice.value = ttsVoices.value[0].id
+    }
+  } catch (_) {}
+}
+
+function startTts() {
+  if (!ttsText.value.trim() || !selectedVoice.value) return
+  const taskId = crypto.randomUUID()
+  ttsTaskId.value = taskId
+  ttsError.value = ''
+  ttsState.value = 'loading'
+  const params = new URLSearchParams({
+    text: ttsText.value,
+    voice_id: selectedVoice.value,
+    task_id: taskId,
+  })
+  // Set src synchronously so browser play() stays within the user-gesture context
+  audioSrc.value = `${apiBaseUrl}/api/v1/convert/text-to-speech/stream?${params.toString()}`
+}
+
+watch(audioSrc, async (src) => {
+  if (!src) return
+  await nextTick()
+  if (audioEl.value) {
+    audioEl.value.load()
+    audioEl.value.play().catch(() => { /* autoplay blocked – controls still visible */ })
+  }
+}, { flush: 'post' })
+
+function onTtsPlaying() { ttsState.value = 'streaming' }
+function onTtsEnded()  { ttsState.value = 'done' }
+function onTtsError()  {
+  ttsState.value = 'error'
+  ttsError.value = 'Audio-Streaming fehlgeschlagen. Bitte erneut versuchen.'
+}
+
+async function downloadOgg() {
+  try {
+    const url = `${apiBaseUrl}/api/v1/convert/text-to-speech/download/${ttsTaskId.value}`
+    const res = await fetch(url)
+    if (!res.ok) {
+      ttsError.value = 'OGG-Datei noch nicht bereit—bitte kurz warten.'
+      return
+    }
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `tts-${ttsTaskId.value.slice(0, 8)}.ogg`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(a.href)
+  } catch (_) {
+    ttsError.value = 'Download fehlgeschlagen.'
+  }
+}
 </script>
 
 <template>
@@ -256,105 +412,97 @@ async function copyOutput() {
 
       <!-- ══ Speech ══════════════════════════════════════════════════════ -->
       <section v-if="activeSection === 'speech'">
-        <div class="section-header">
-          <h1>Speech</h1>
-          <p>Sprachverarbeitung mit lokalem Whisper-Modell</p>
-        </div>
+        <div class="speech-grid">
 
-        <!-- Model-Status-Banner -->
-        <div v-if="!modelReady" class="model-banner" :class="{ 'model-banner--error': modelError }">
-          <div class="model-banner__header">
-            <span v-if="modelLoading" class="spinner" />
-            <span v-if="modelError">⚠</span>
-            <span class="model-banner__message">{{ modelMessage }}</span>
-          </div>
-          <div v-if="modelLoading" class="progress-track">
-            <div class="progress-bar" :style="progressBarStyle" />
-          </div>
-        </div>
-
-        <!-- Modell-Selektor -->
-        <div class="model-row">
-          <label class="model-row__label">
-            Modell
-            <div class="model-select-wrap">
-              <select v-model="selectedModel">
-                <option v-for="m in availableModels" :key="m.name" :value="m.name">
-                  {{ m.name }}{{ m.name === activeModel ? ' ★' : '' }}
-                </option>
-              </select>
-              <span
-                class="model-dot"
-                :class="{ 'model-dot--ready': selectedModelMeta?.cached }"
-                :title="selectedModelMeta?.cached ? 'Modell im Cache' : 'Noch nicht heruntergeladen'"
-              />
+          <!-- ── STT Panel ─────────────────────────────────────────── -->
+          <div class="speech-panel">
+            <div class="speech-panel__header">
+              <span class="speech-panel__icon">🎤</span>
+              <h2 class="speech-panel__title">Speech-to-Text</h2>
             </div>
-          </label>
-          <button
-            v-if="selectedModel && selectedModel !== activeModel"
-            class="btn-load"
-            :class="{ 'btn-load--download': !selectedModelMeta?.cached }"
-            :disabled="modelLoading"
-            @click="applyModelSelection"
-          >
-            <span v-if="modelLoading" class="spinner" />
-            {{ selectedModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
-          </button>
+            <div class="speech-panel__body">
 
-          <!-- Debug: alle Modelle mit Cache-Status -->
-          <div class="model-debug">
-            <span
-              v-for="m in availableModels"
-              :key="m.name"
-              class="model-chip"
-              :class="{
-                'model-chip--active': m.name === activeModel,
-                'model-chip--cached': m.cached && m.name !== activeModel,
-              }"
-              :title="m.path"
-            >{{ m.name }}</span>
-          </div>
-        </div>
+              <!-- Model-Status-Banner -->
+              <div v-if="!modelReady" class="model-banner" :class="{ 'model-banner--error': modelError }">
+                <div class="model-banner__header">
+                  <span v-if="modelLoading" class="spinner" />
+                  <span v-if="modelError">⚠</span>
+                  <span class="model-banner__message">{{ modelMessage }}</span>
+                </div>
+                <div v-if="modelLoading" class="progress-track">
+                  <div class="progress-bar" :style="progressBarStyle" />
+                </div>
+              </div>
 
-        <!-- Modell-Infokarte -->
-        <div v-if="selectedModelMeta" class="model-card">
-          <div class="model-card__row">
-            <span class="model-card__chip">{{ selectedModelMeta.params }} Params</span>
-            <span class="model-card__chip">{{ formatSize(selectedModelMeta.size_int8_mb) }}</span>
-            <span class="model-card__chip">{{ deviceInfo.compute_type }}</span>
-          </div>
-          <div class="model-card__row">
-            <span class="model-card__label">Qualität</span>
-            <span class="badge" :class="qualityClass(selectedModelMeta.quality)">
-              {{ selectedModelMeta.quality }}&nbsp;(WER&nbsp;~{{ selectedModelMeta.wer_pct }}%)
-            </span>
-            <span class="model-card__sep">·</span>
-            <span class="model-card__label">Geschwindigkeit</span>
-            <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
-          </div>
-          <div v-if="systemInfo" class="model-card__row model-card__hw">
-            <span>{{ systemInfo.cpu_count }}× {{ systemInfo.cpu_model }}</span>
-            <template v-if="systemInfo.gpus && systemInfo.gpus.length > 0">
-              <span class="model-card__sep">·</span>
-              <span v-for="gpu in systemInfo.gpus" :key="gpu.index">
-                {{ gpu.name }} ({{ formatSize(gpu.memory_mb) }})
-              </span>
-            </template>
-            <span class="model-card__sep">·</span>
-            <span class="model-card__active">{{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
-          </div>
-        </div>
+              <!-- Modell-Selektor -->
+              <div class="model-row">
+                <label class="model-row__label">
+                  Modell
+                  <div class="model-select-wrap">
+                    <select v-model="selectedModel">
+                      <option v-for="m in availableModels" :key="m.name" :value="m.name">
+                        {{ m.name }}{{ m.name === activeModel ? ' ★' : '' }}
+                      </option>
+                    </select>
+                    <span
+                      class="model-dot"
+                      :class="{ 'model-dot--ready': selectedModelMeta?.cached }"
+                      :title="selectedModelMeta?.cached ? 'Modell im Cache' : 'Noch nicht heruntergeladen'"
+                    />
+                  </div>
+                </label>
+                <button
+                  v-if="selectedModel && selectedModel !== activeModel"
+                  class="btn-load"
+                  :class="{ 'btn-load--download': !selectedModelMeta?.cached }"
+                  :disabled="modelLoading"
+                  @click="applyModelSelection"
+                >
+                  <span v-if="modelLoading" class="spinner" />
+                  {{ selectedModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
+                </button>
+                <div class="model-debug">
+                  <span
+                    v-for="m in availableModels"
+                    :key="m.name"
+                    class="model-chip"
+                    :class="{
+                      'model-chip--active': m.name === activeModel,
+                      'model-chip--cached': m.cached && m.name !== activeModel,
+                    }"
+                    :title="m.path"
+                  >{{ m.name }}</span>
+                </div>
+              </div>
 
-        <!-- Extension-Cards -->
-        <div class="card-grid">
-
-          <!-- ── Speech-to-Text ────────────────────────────────────── -->
-          <div class="ext-card">
-            <div class="ext-card__header">
-              <span class="ext-card__icon">🎤</span>
-              <h2 class="ext-card__title">Speech-to-Text</h2>
-            </div>
-            <div class="ext-card__body">
+              <!-- Modell-Infokarte -->
+              <div v-if="selectedModelMeta" class="model-card">
+                <div class="model-card__row">
+                  <span class="model-card__chip">{{ selectedModelMeta.params }} Params</span>
+                  <span class="model-card__chip">{{ formatSize(selectedModelMeta.size_int8_mb) }}</span>
+                  <span class="model-card__chip">{{ deviceInfo.compute_type }}</span>
+                </div>
+                <div class="model-card__row">
+                  <span class="model-card__label">Qualität</span>
+                  <span class="badge" :class="qualityClass(selectedModelMeta.quality)">
+                    {{ selectedModelMeta.quality }}&nbsp;(WER&nbsp;~{{ selectedModelMeta.wer_pct }}%)
+                  </span>
+                  <span class="model-card__sep">·</span>
+                  <span class="model-card__label">Geschwindigkeit</span>
+                  <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
+                </div>
+                <div v-if="systemInfo" class="model-card__row model-card__hw">
+                  <span>{{ systemInfo.cpu_count }}× {{ systemInfo.cpu_model }}</span>
+                  <template v-if="systemInfo.gpus && systemInfo.gpus.length > 0">
+                    <span class="model-card__sep">·</span>
+                    <span v-for="gpu in systemInfo.gpus" :key="gpu.index">
+                      {{ gpu.name }} ({{ formatSize(gpu.memory_mb) }})
+                    </span>
+                  </template>
+                  <span class="model-card__sep">·</span>
+                  <span class="model-card__active">{{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
+                </div>
+              </div>
               <div class="stt-options">
                 <div class="option-row">
                   <span class="option-label">Modus</span>
@@ -410,20 +558,149 @@ async function copyOutput() {
             </div>
           </div>
 
-          <!-- ── Text-to-Speech ────────────────────────────────────── -->
-          <div class="ext-card">
-            <div class="ext-card__header">
-              <span class="ext-card__icon">🔊</span>
-              <h2 class="ext-card__title">Text-to-Speech</h2>
-              <span class="ext-card__badge">Demnächst</span>
+          <!-- ── TTS Panel ─────────────────────────────────────────── -->
+          <div class="speech-panel">
+            <div class="speech-panel__header">
+              <span class="speech-panel__icon">🔊</span>
+              <h2 class="speech-panel__title">Text-to-Speech</h2>
             </div>
-            <div class="ext-card__body">
-              <p class="tts-placeholder">
-                Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec at purus non lectus
-                rhoncus tempor. Futura functio Text-to-Speech textum scriptum in vocem artificialem
-                convertit. Parametri inclusi erunt: selectio vocis, velocitas, altitudo et emphasis.
-                Integratio cum modello locali TTS (e.g. Coqui, Bark) mox aderit.
-              </p>
+            <div class="speech-panel__body">
+
+              <!-- TTS model loading banner -->
+              <div v-if="!ttsModelReady && ttsModelPhase !== 'idle'" class="model-banner"
+                   :class="{ 'model-banner--error': ttsModelError }">
+                <div class="model-banner__header">
+                  <span v-if="ttsModelLoading" class="spinner" aria-hidden="true" />
+                  <span v-if="ttsModelError">⚠</span>
+                  <span class="model-banner__message">{{ ttsModelMessage }}</span>
+                </div>
+                <div v-if="ttsModelLoading" class="progress-track">
+                  <div class="progress-bar" :style="ttsProgressBarStyle" />
+                </div>
+              </div>
+
+              <!-- TTS model selector row -->
+              <div class="model-row">
+                <label class="model-row__label">
+                  TTS-Modell
+                  <div class="model-select-wrap">
+                    <select v-model="selectedTtsModel">
+                      <option v-for="m in availableTtsModels" :key="m.name" :value="m.name">
+                        {{ m.name }}{{ m.name === activeTtsModel ? ' ★' : '' }}
+                      </option>
+                    </select>
+                    <span class="model-dot"
+                      :class="{ 'model-dot--ready': selectedTtsModelMeta?.cached }"
+                      :title="selectedTtsModelMeta?.cached ? 'Im Cache' : 'Noch nicht heruntergeladen'" />
+                  </div>
+                </label>
+                <button v-if="selectedTtsModel && selectedTtsModel !== activeTtsModel"
+                  class="btn-load"
+                  :class="{ 'btn-load--download': !selectedTtsModelMeta?.cached }"
+                  :disabled="ttsModelLoading"
+                  @click="applyTtsModelSelection">
+                  <span v-if="ttsModelLoading" class="spinner" />
+                  {{ selectedTtsModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
+                </button>
+                <div class="model-debug">
+                  <span v-for="m in availableTtsModels" :key="m.name" class="model-chip"
+                    :class="{ 'model-chip--active': m.name === activeTtsModel, 'model-chip--cached': m.cached && m.name !== activeTtsModel }">
+                    {{ m.name }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- TTS model info card -->
+              <div v-if="selectedTtsModelMeta" class="model-card">
+                <div class="model-card__row">
+                  <span class="model-card__chip">{{ selectedTtsModelMeta.precision }}</span>
+                  <span class="model-card__chip">{{ formatSize(selectedTtsModelMeta.size_mb) }}</span>
+                </div>
+                <div class="model-card__row">
+                  <span class="model-card__label">Qualität</span>
+                  <span class="badge" :class="qualityClass(selectedTtsModelMeta.quality)">{{ selectedTtsModelMeta.quality }}</span>
+                  <span class="model-card__sep">·</span>
+                  <span class="model-card__label">Geschwindigkeit</span>
+                  <span class="badge" :class="speedClass(selectedTtsModelMeta.speed)">{{ selectedTtsModelMeta.speed }}</span>
+                </div>
+              </div>
+
+              <!-- Voice selector -->
+              <div class="tts-options">
+                <div class="option-row">
+                  <span class="option-label">Stimme</span>
+                  <select
+                    class="lang-select"
+                    v-model="selectedVoice"
+                    :disabled="ttsVoices.length === 0 || ttsState === 'loading' || ttsState === 'streaming'"
+                  >
+                    <option value="" disabled>Stimme wählen…</option>
+                    <template v-for="[ttsLangLabel, ttsLangVoices] in ttsVoicesByLang" :key="ttsLangLabel">
+                      <optgroup :label="ttsLangLabel">
+                        <option v-for="v in ttsLangVoices" :key="v.id" :value="v.id">{{ v.name }}</option>
+                      </optgroup>
+                    </template>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Input textarea -->
+              <textarea
+                class="tts-textarea"
+                v-model="ttsText"
+                placeholder="Text hier eingeben…"
+                rows="5"
+                :disabled="ttsState === 'loading' || ttsState === 'streaming'"
+              />
+
+              <!-- Error message -->
+              <p v-if="ttsError" class="error">{{ ttsError }}</p>
+
+              <!-- Status banner -->
+              <div v-if="ttsState === 'loading'" class="tts-status">
+                <span class="spinner" aria-hidden="true"></span>Modell wird geladen…
+              </div>
+              <div v-else-if="ttsState === 'streaming'" class="tts-status tts-status--active">
+                <span class="spinner" aria-hidden="true"></span>Wird synthetisiert…
+              </div>
+
+              <!-- Synthesize button -->
+              <button
+                class="btn-convert"
+                :disabled="!ttsText.trim() || !selectedVoice || ttsState === 'loading' || ttsState === 'streaming'"
+                @click="startTts"
+              >
+                <span
+                  v-if="ttsState === 'loading' || ttsState === 'streaming'"
+                  class="spinner"
+                  aria-hidden="true"
+                ></span>
+                {{
+                  ttsState === 'loading'   ? 'Modell lädt…' :
+                  ttsState === 'streaming' ? 'Generiert…'   :
+                  'Synthesisieren & Streamen'
+                }}
+              </button>
+
+              <!-- Audio player + OGG download -->
+              <div v-if="audioSrc" class="tts-player">
+                <audio
+                  ref="audioEl"
+                  controls
+                  :src="audioSrc"
+                  @playing="onTtsPlaying"
+                  @ended="onTtsEnded"
+                  @error="onTtsError"
+                />
+                <button
+                  v-if="ttsState === 'done'"
+                  class="btn-download"
+                  @click="downloadOgg"
+                >
+                  ⬇ Als OGG herunterladen
+                </button>
+              </div>
+
             </div>
           </div>
 
@@ -580,7 +857,51 @@ async function copyOutput() {
   color: #6b6f88;
 }
 
-/* ── Card grid ───────────────────────────────────────────────────────────── */
+/* ── Speech two-panel layout ─────────────────────────────────────────────── */
+.speech-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.speech-panel {
+  background: #0c0e22;
+  border: 1px solid #1e2244;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.speech-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid #181b35;
+  background: #07091a;
+}
+
+.speech-panel__icon {
+  font-size: 1.15rem;
+}
+
+.speech-panel__title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #c0c4ff;
+  margin: 0;
+}
+
+.speech-panel__body {
+  padding: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ── Card grid (kept for future sections) ────────────────────────────────── */
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
@@ -588,7 +909,6 @@ async function copyOutput() {
   align-items: start;
 }
 
-/* ── Extension card ─────────────────────────────────────────────────────── */
 .ext-card {
   background: #0c0e22;
   border: 1px solid #1e2244;
@@ -605,9 +925,7 @@ async function copyOutput() {
   background: #07091a;
 }
 
-.ext-card__icon {
-  font-size: 1.05rem;
-}
+.ext-card__icon { font-size: 1.05rem; }
 
 .ext-card__title {
   font-size: 0.92rem;
@@ -616,21 +934,7 @@ async function copyOutput() {
   margin: 0;
 }
 
-.ext-card__badge {
-  margin-left: auto;
-  font-size: 0.66rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 7px;
-  background: #161830;
-  color: #454868;
-  border: 1px solid #1e2244;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.ext-card__body {
-  padding: 1rem;
-}
+.ext-card__body { padding: 1rem; }
 
 /* ── STT options ────────────────────────────────────────────────────────── */
 .stt-options {
@@ -817,12 +1121,88 @@ async function copyOutput() {
   cursor: not-allowed;
 }
 
-/* ── TTS placeholder ────────────────────────────────────────────────────── */
-.tts-placeholder {
-  color: #30324e;
-  font-size: 0.8rem;
-  line-height: 1.7;
-  margin: 0;
+/* ── TTS ────────────────────────────────────────────────────────────────── */
+.tts-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.tts-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 0.6rem 0.75rem;
+  border: 1.5px solid #2a2c40;
+  border-radius: 6px;
+  background: #1a1c2e;
+  color: #c0c3e0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  font-family: inherit;
+  margin-bottom: 0.75rem;
+  transition: border-color 0.2s;
+}
+
+.tts-textarea:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+.tts-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tts-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 6px;
+  background: #1e2035;
+  color: #888ab8;
+  font-size: 0.82rem;
+  margin-bottom: 0.75rem;
+}
+
+.tts-status--active {
+  color: #7c7fff;
+  background: #1c1e3a;
+}
+
+.tts-player {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.tts-player audio {
+  width: 100%;
+  border-radius: 6px;
+}
+
+.btn-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #22243e;
+  color: #818cf8;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s;
+  align-self: flex-start;
+}
+
+.btn-download:hover {
+  background: #2d2f52;
+  color: #a5b4fc;
 }
 
 /* ── Coming soon (Abschnitt) ────────────────────────────────────────────── */

@@ -10,6 +10,7 @@ import platform
 import subprocess
 import sys
 import traceback
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,6 +32,16 @@ from src.services.converter import (
     process_pdf_placeholder,
     start_model_loading,
     switch_model,
+)
+from src.services.tts_local import (
+    get_ogg_path,
+    get_tts_model_info,
+    get_tts_model_status,
+    get_tts_voices,
+    start_tts_model_loading,
+    stream_tts,
+    switch_tts_model,
+    validate_task_id,
 )
 
 DEFAULT_UPLOAD_AUDIO_FILENAME = "upload.wav"
@@ -80,8 +91,9 @@ def _get_gpus() -> list[dict]:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):  # noqa: ARG001
-    """Trigger faster-whisper model loading at server startup."""
+    """Trigger STT and TTS model loading at server startup."""
     await start_model_loading()
+    await start_tts_model_loading()
     yield
 
 
@@ -206,6 +218,102 @@ async def convert_pdf_to_markdown_api(file: UploadFile = File(...)) -> dict[str,
     except Exception as error:
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
+
+
+# ---------------------------------------------------------------------------
+# Text-to-Speech endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/v1/convert/text-to-speech/models")
+async def tts_models():
+    """Return the list of available Kokoro TTS voices."""
+    return {"voices": get_tts_voices()}
+
+
+@app.get("/api/v1/convert/text-to-speech/stream")
+async def tts_stream(
+    text: str = Query(..., min_length=1, max_length=2000),
+    voice_id: str = Query(...),
+    task_id: str = Query(...),
+):
+    """Stream synthesised speech as chunked WAV audio; saves OGG to temp/."""
+    try:
+        validate_task_id(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        return StreamingResponse(
+            stream_tts(text, voice_id, task_id),
+            media_type="audio/wav",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Task-Id": task_id,
+            },
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/convert/text-to-speech/download/{task_id}")
+async def tts_download(task_id: str):
+    """Return the saved OGG file for a completed TTS task."""
+    try:
+        ogg_path = get_ogg_path(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not ogg_path.exists():
+        raise HTTPException(status_code=404, detail="OGG file not ready yet.")
+
+    return FileResponse(
+        str(ogg_path),
+        media_type="audio/ogg",
+        filename=f"tts-{task_id[:8]}.ogg",
+    )
+
+
+# ---------------------------------------------------------------------------
+# TTS model management
+# ---------------------------------------------------------------------------
+
+
+async def _tts_model_status_generator():
+    while True:
+        status = get_tts_model_status()
+        yield f"data: {json.dumps(status)}\n\n"
+        if status["phase"] in ("ready", "error"):
+            break
+        await asyncio.sleep(0.3)
+
+
+@app.get("/api/v1/tts/model/info")
+async def tts_model_info():
+    """Return available TTS models and which one is active."""
+    return get_tts_model_info()
+
+
+@app.get("/api/v1/tts/model/status")
+async def tts_model_status():
+    """SSE stream of TTS model loading progress."""
+    return StreamingResponse(
+        _tts_model_status_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/v1/tts/model/load")
+async def tts_model_load(payload: dict):
+    """Switch to a different TTS model (downloads if needed)."""
+    model_name = payload.get("model", "")
+    try:
+        await switch_tts_model(model_name)
+        return {"status": "loading", "model": model_name}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
