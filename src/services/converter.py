@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import httpx
 from faster_whisper import WhisperModel
 
-ALLOWED_AUDIO_EXTENSIONS: set[str] = {".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".wav"}
+ALLOWED_AUDIO_EXTENSIONS: set[str] = {".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".wav", ".webm"}
 MAX_DOWNLOAD_SIZE_BYTES = 100 * 1024 * 1024
 DEFAULT_AUDIO_FILENAME = "downloaded-audio.wav"
 DEFAULT_WHISPER_MODEL = "base"

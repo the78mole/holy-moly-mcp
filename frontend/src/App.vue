@@ -177,7 +177,13 @@ function connectModelStatus() {
 }
 
 onMounted(() => { fetchModelInfo(); fetchSystemInfo(); connectModelStatus(); fetchTtsVoices(); fetchTtsModelInfo(); connectTtsModelStatus() })
-onUnmounted(() => { eventSource?.close(); ttsEventSource?.close() })
+onUnmounted(() => {
+  eventSource?.close()
+  ttsEventSource?.close()
+  if (_recordingTimer) clearInterval(_recordingTimer)
+  if (_mediaRecorder && isRecording.value) _mediaRecorder.stop()
+  _stopLevelMeter()
+})
 
 // ── file handling ────────────────────────────────────────────────────────────
 
@@ -226,6 +232,93 @@ async function copyOutput() {
   await navigator.clipboard.writeText(output.value)
   copied.value = true
   setTimeout(() => { copied.value = false }, 1500)
+}
+
+// ── Mikrofon-Aufnahme ────────────────────────────────────────────────────────
+
+const isRecording = ref(false)
+const recordingDuration = ref(0)
+const levelBars = ref(new Array(28).fill(0))
+let _mediaRecorder = null
+let _recordingChunks = []
+let _recordingTimer = null
+let _audioCtx = null
+let _analyser = null
+let _analyserRaf = null
+
+function formatDuration(s) {
+  const m = Math.floor(s / 60).toString().padStart(2, '0')
+  const sec = (s % 60).toString().padStart(2, '0')
+  return `${m}:${sec}`
+}
+
+function _startLevelMeter(stream) {
+  const BAR_COUNT = levelBars.value.length
+  _audioCtx = new AudioContext()
+  _analyser = _audioCtx.createAnalyser()
+  _analyser.fftSize = 256
+  _analyser.smoothingTimeConstant = 0.72
+  _audioCtx.createMediaStreamSource(stream).connect(_analyser)
+  const dataArr = new Uint8Array(_analyser.frequencyBinCount)
+  const step = Math.floor(_analyser.frequencyBinCount / BAR_COUNT)
+  function tick() {
+    _analyserRaf = requestAnimationFrame(tick)
+    _analyser.getByteFrequencyData(dataArr)
+    for (let i = 0; i < BAR_COUNT; i++) {
+      let sum = 0
+      for (let j = 0; j < step; j++) sum += dataArr[i * step + j]
+      levelBars.value[i] = Math.round((sum / step / 255) * 100)
+    }
+  }
+  tick()
+}
+
+function _stopLevelMeter() {
+  if (_analyserRaf) { cancelAnimationFrame(_analyserRaf); _analyserRaf = null }
+  _audioCtx?.close(); _audioCtx = null; _analyser = null
+  levelBars.value = new Array(levelBars.value.length).fill(0)
+}
+
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    _recordingChunks = []
+    recordingDuration.value = 0
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : ''
+    _mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {})
+    _mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) _recordingChunks.push(e.data)
+    }
+    _mediaRecorder.onstop = async () => {
+      _stopLevelMeter()
+      stream.getTracks().forEach(t => t.stop())
+      const type = mimeType || 'audio/webm'
+      const blob = new Blob(_recordingChunks, { type })
+      const ext = type.includes('webm') ? 'webm' : 'ogg'
+      file.value = new File([blob], `recording.${ext}`, { type })
+      error.value = ''
+      await convert()
+    }
+    _mediaRecorder.start(250)
+    isRecording.value = true
+    _recordingTimer = setInterval(() => { recordingDuration.value++ }, 1000)
+    _startLevelMeter(stream)
+  } catch (err) {
+    error.value = 'Mikrofon-Zugriff verweigert: ' + (err instanceof Error ? err.message : String(err))
+  }
+}
+
+function stopRecording() {
+  if (_mediaRecorder && isRecording.value) {
+    clearInterval(_recordingTimer)
+    _recordingTimer = null
+    isRecording.value = false
+    _mediaRecorder.stop()
+  }
 }
 
 // ── TTS model state ─────────────────────────────────────────────────────────
@@ -536,6 +629,38 @@ async function downloadOgg() {
                 <input type="file" :accept="audioTypes" @change="onSelect" />
                 <span>{{ dropLabel }}</span>
               </label>
+
+              <div class="record-divider"><span>– oder –</span></div>
+
+              <!-- Mikrofon-Aufnahme -->
+              <div class="record-row">
+                <button
+                  v-if="!isRecording"
+                  class="btn-record"
+                  :disabled="loading || !modelReady"
+                  @click="startRecording"
+                >
+                  🎙 Aufnahme starten
+                </button>
+                <button
+                  v-else
+                  class="btn-record btn-record--stop"
+                  @click="stopRecording"
+                >
+                  <span class="rec-dot" />
+                  {{ formatDuration(recordingDuration) }} &ndash; Stopp
+                </button>
+              </div>
+
+              <!-- Level Meter -->
+              <div v-if="isRecording" class="level-meter" aria-hidden="true">
+                <div
+                  v-for="(h, i) in levelBars"
+                  :key="i"
+                  class="level-bar"
+                  :style="{ height: Math.max(h, 3) + '%' }"
+                />
+              </div>
 
               <p v-if="error" class="error">{{ error }}</p>
 
@@ -1119,6 +1244,104 @@ async function downloadOgg() {
 .btn-convert:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* ── Record ─────────────────────────────────────────────────────────────── */
+.record-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 0.5rem 0;
+  color: #3a3d5c;
+  font-size: 0.75rem;
+}
+.record-divider::before,
+.record-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid #1e2140;
+}
+.record-divider span {
+  padding: 0 0.6rem;
+}
+
+.record-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+}
+
+.btn-record {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 1.2rem;
+  border-radius: 8px;
+  border: 1.5px solid #4f46e5;
+  background: transparent;
+  color: #a5b4fc;
+  font-size: 0.88rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-record:hover:not(:disabled) {
+  background: #1e1b4b;
+  color: #c7d2fe;
+}
+.btn-record:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-record--stop {
+  border-color: #ef4444;
+  color: #fca5a5;
+  animation: pulse-border 1.4s ease-in-out infinite;
+}
+.btn-record--stop:hover {
+  background: #2d0a0a;
+  color: #fca5a5;
+}
+
+.rec-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.15; }
+}
+
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.35); }
+  50%       { box-shadow: 0 0 0 5px rgba(239,68,68,0); }
+}
+
+.level-meter {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 48px;
+  padding: 4px 6px;
+  background: #0b0d1f;
+  border: 1px solid #1e2140;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+}
+
+.level-bar {
+  flex: 1;
+  min-height: 3%;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(to top, #22c55e 0%, #facc15 65%, #ef4444 100%);
+  transition: height 60ms linear;
 }
 
 /* ── TTS ────────────────────────────────────────────────────────────────── */
