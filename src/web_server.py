@@ -17,7 +17,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.services.converter import (
@@ -32,6 +32,7 @@ from src.services.converter import (
     start_model_loading,
     switch_model,
 )
+from src.services.md_to_pdf import convert_html_to_pdf
 from src.services.pdf_converter import convert_pdf_bytes, convert_pdf_from_url
 from src.services.tts_local import (
     get_ogg_path,
@@ -252,6 +253,24 @@ async def convert_pdf_from_url_api(payload: dict) -> dict[str, str]:
     except Exception as error:
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
+
+
+@app.post("/api/v1/convert/markdown-to-pdf")
+async def markdown_to_pdf_api(payload: dict) -> Response:
+    """Convert a rendered HTML document (from Markdown) to PDF via WeasyPrint."""
+    html = (payload.get("html") or "").strip()
+    if not html:
+        raise HTTPException(status_code=400, detail="Field 'html' is required.")
+    try:
+        pdf_bytes = await asyncio.to_thread(convert_html_to_pdf, html)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'inline; filename="document.pdf"'},
+        )
+    except Exception as error:
+        print(traceback.format_exc(), file=sys.stderr, flush=True)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {error}") from error
 
 
 # ---------------------------------------------------------------------------

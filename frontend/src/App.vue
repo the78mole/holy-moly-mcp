@@ -1,6 +1,32 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
+import hljs from 'highlight.js'
+import mermaid from 'mermaid'
+
+// ── Configure marked: syntax highlighting + mermaid blocks ─────────────────
+marked.use({
+  renderer: {
+    code({ text, lang } = {}) {
+      if (lang === 'mermaid') {
+        return `<div class="mermaid">${text}</div>`
+      }
+      const highlighted =
+        lang && hljs.getLanguage(lang)
+          ? hljs.highlight(text, { language: lang, ignoreIllegals: true }).value
+          : hljs.highlightAuto(text).value
+      return `<pre><code class="hljs">${highlighted}</code></pre>`
+    },
+  },
+})
+
+// ── Initialize Mermaid ──────────────────────────────────────────────────────
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'neutral',
+  flowchart: { htmlLabels: false },
+  sequence: { useMaxWidth: true },
+})
 
 const file = ref(null)
 const mode = ref('plain')
@@ -416,6 +442,144 @@ async function copyPdfMarkdown() {
   setTimeout(() => { pdfCopied.value = false }, 1500)
 }
 
+// ── Markdown → PDF ──────────────────────────────────────────────────────────
+const mdInput       = ref('')
+const mdLoading     = ref(false)
+const mdError       = ref('')
+const mdPdfUrl      = ref('')         // blob URL for PDF iframe
+const mdPdfBlob     = ref(null)
+const mdElapsed     = ref(0)
+let _mdTimer        = null
+const MD_TIMEOUT    = 60
+const mdTimeoutBarStyle = computed(() => ({
+  width: `${Math.min(100, (mdElapsed.value / MD_TIMEOUT) * 100)}%`,
+}))
+const mdPreviewRef  = ref(null)       // template ref for the preview pane
+let _mermaidIdCtr   = 0
+
+const mdRendered = computed(() =>
+  mdInput.value ? marked.parse(mdInput.value) : '',
+)
+
+const mdDropLabel = computed(() =>
+  mdInput.value ? 'Andere Markdown-Datei ablegen…' : 'Markdown-Datei hier ablegen oder klicken…',
+)
+
+function onMdFileSelect(e) {
+  const f = e.target?.files?.[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = (ev) => { mdInput.value = ev.target.result }
+  reader.readAsText(f, 'utf-8')
+}
+
+function onMdDrop(e) {
+  e.preventDefault()
+  const f = e.dataTransfer?.files?.[0]
+  if (!f) return
+  const reader = new FileReader()
+  reader.onload = (ev) => { mdInput.value = ev.target.result }
+  reader.readAsText(f, 'utf-8')
+}
+
+watch(mdRendered, async () => {
+  await nextTick()
+  const container = mdPreviewRef.value
+  if (!container) return
+  const nodes = Array.from(container.querySelectorAll('.mermaid:not([data-rendered])'))
+  for (const node of nodes) {
+    const code = node.textContent?.trim() || ''
+    if (!code) continue
+    try {
+      const { svg } = await mermaid.render(`mermaid-${++_mermaidIdCtr}`, code)
+      node.innerHTML = svg
+      node.dataset.rendered = '1'
+    } catch (err) {
+      node.innerHTML = `<pre style="color:#f87171;font-size:0.8em">${err.message}</pre>`
+      node.dataset.rendered = '1'
+    }
+  }
+})
+
+// CSS embedded into the HTML sent to the backend (WeasyPrint-compatible)
+const _PDF_BODY_CSS = `
+  body{font-family:'Liberation Sans',Arial,sans-serif;font-size:11pt;line-height:1.6;color:#1a1a1a}
+  h1{font-size:1.9em;border-bottom:2px solid #e0e0e0;padding-bottom:.25em;margin-top:1em}
+  h2{font-size:1.5em;border-bottom:1px solid #e0e0e0;padding-bottom:.2em;margin-top:1em}
+  h3,h4,h5,h6{margin-top:1em}
+  p{margin:.4em 0 .9em}
+  code{font-family:monospace;font-size:.88em;background:#f4f4f4;padding:.1em .3em;border-radius:3px}
+  pre{background:#f4f4f4;padding:1em;border-radius:4px;overflow:hidden;margin:.5em 0 1em}
+  pre code{background:transparent;padding:0}
+  blockquote{border-left:4px solid #d0d0d0;margin:0 0 1em;padding:.5em 1em;color:#555}
+  table{border-collapse:collapse;width:100%;margin-bottom:1em}
+  th,td{border:1px solid #d0d0d0;padding:.4em .8em;text-align:left}
+  th{background:#f0f0f0;font-weight:600}
+  img,svg{max-width:100%;height:auto}
+  a{color:#2563eb}
+  hr{border:none;border-top:1px solid #e0e0e0;margin:1.5em 0}
+  ul,ol{padding-left:1.5em;margin:.4em 0 .9em}
+  li{margin-bottom:.25em}
+  .hljs{background:#f4f4f4;color:#333}
+  .hljs-keyword{color:#a626a4;font-weight:bold}
+  .hljs-string{color:#50a14f}
+  .hljs-comment{color:#a0a0a0;font-style:italic}
+  .hljs-number{color:#986801}
+  .hljs-built_in{color:#c18401}
+  .hljs-title{color:#4078f2}
+  .hljs-attr{color:#986801}
+  .hljs-variable{color:#e45649}
+  .hljs-literal{color:#0184bb}
+  .hljs-operator{color:#0184bb}
+`
+
+async function generateMdPdf() {
+  if (!mdInput.value.trim()) return
+  mdError.value = ''
+  mdPdfUrl.value = ''
+  mdPdfBlob.value = null
+  mdLoading.value = true
+  mdElapsed.value = 0
+  _mdTimer = setInterval(() => { mdElapsed.value++ }, 1000)
+  try {
+    await nextTick()
+    const previewEl = mdPreviewRef.value
+    const bodyHtml = previewEl ? previewEl.innerHTML : marked.parse(mdInput.value)
+    const html = `<!DOCTYPE html>
+<html lang="de"><head><meta charset="UTF-8">
+<style>@page{margin:2cm;size:A4}${_PDF_BODY_CSS}</style>
+</head><body>${bodyHtml}</body></html>`
+    const res = await fetch(`${apiBaseUrl}/api/v1/convert/markdown-to-pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html }),
+    })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      throw new Error(d.detail || 'PDF-Generierung fehlgeschlagen.')
+    }
+    const blob = await res.blob()
+    mdPdfBlob.value = blob
+    mdPdfUrl.value = URL.createObjectURL(blob)
+  } catch (err) {
+    mdError.value = err instanceof Error ? err.message : 'Unbekannter Fehler'
+  } finally {
+    clearInterval(_mdTimer)
+    _mdTimer = null
+    mdElapsed.value = 0
+    mdLoading.value = false
+  }
+}
+
+function downloadMdPdf() {
+  if (!mdPdfBlob.value) return
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(mdPdfBlob.value)
+  a.download = 'document.pdf'
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+}
+
 // ── TTS model state ─────────────────────────────────────────────────────────
 
 const availableTtsModels = ref([])
@@ -603,6 +767,13 @@ async function downloadOgg() {
             @click="docSubSection = 'pdf-md'"
           >
             <span class="nav-item__icon">🔄</span> PDF → Markdown
+          </button>
+          <button
+            class="nav-item nav-item--sub"
+            :class="{ 'nav-item--active': docSubSection === 'md-pdf' }"
+            @click="docSubSection = 'md-pdf'"
+          >
+            <span class="nav-item__icon">📝</span> Markdown → PDF
           </button>
         </template>
       </div>
@@ -1063,6 +1234,70 @@ async function downloadOgg() {
           <div v-else-if="pdfLoading" class="pdf-converting">
             <span class="spinner" />
             <span>marker_single läuft… das kann je nach PDF-Größe etwas dauern.</span>
+          </div>
+
+        </div>
+
+        <!-- ── Markdown → PDF ──────────────────────────────────────────── -->
+        <div v-else-if="docSubSection === 'md-pdf'" class="mdpdf-workspace">
+
+          <!-- Left: editor panel -->
+          <div class="mdpdf-editor-pane">
+            <div class="speech-panel__header">
+              <span class="speech-panel__icon">📝</span>
+              <h2 class="speech-panel__title">Markdown → PDF</h2>
+            </div>
+
+            <!-- File drop zone -->
+            <label class="dropzone" @dragover.prevent @drop="onMdDrop">
+              <input type="file" accept=".md,.txt,.markdown" @change="onMdFileSelect" />
+              <span>{{ mdDropLabel }}</span>
+            </label>
+
+            <!-- Markdown textarea -->
+            <textarea
+              class="mdpdf-textarea"
+              v-model="mdInput"
+              spellcheck="false"
+              placeholder="# Mein Dokument&#10;&#10;Hier Markdown eingeben…&#10;&#10;```mermaid&#10;graph TD&#10;  A[Start] --&gt; B[Ende]&#10;```"
+            />
+
+            <p v-if="mdError" class="error">{{ mdError }}</p>
+
+            <button
+              class="btn-convert"
+              :disabled="mdLoading || !mdInput.trim()"
+              @click="generateMdPdf"
+              style="margin-top: 0.5rem"
+            >
+              <span v-if="mdLoading" class="spinner" />
+              {{ mdLoading ? 'Generiere PDF…' : 'PDF generieren' }}
+            </button>
+
+            <!-- Progress bar -->
+            <div v-if="mdLoading" class="pdf-progress-track">
+              <div class="pdf-progress-bar" :style="mdTimeoutBarStyle" />
+            </div>
+            <p v-if="mdLoading" class="pdf-progress-label">
+              {{ mdElapsed }}s&nbsp;/&nbsp;{{ MD_TIMEOUT }}s
+            </p>
+          </div>
+
+          <!-- Middle: live Markdown preview -->
+          <div class="mdpdf-preview-pane">
+            <div class="pdf-col__header">
+              <span>Vorschau</span>
+            </div>
+            <div ref="mdPreviewRef" class="mdpdf-markdown markdown-body" v-html="mdRendered" />
+          </div>
+
+          <!-- Right: PDF preview (only when PDF exists) -->
+          <div v-if="mdPdfUrl" class="mdpdf-pdf-pane">
+            <div class="pdf-col__header">
+              <span>PDF</span>
+              <button class="btn-copy" @click="downloadMdPdf">⬇ Download</button>
+            </div>
+            <iframe class="pdf-iframe" :src="mdPdfUrl" />
           </div>
 
         </div>
@@ -1755,6 +1990,117 @@ async function downloadOgg() {
   font-size: 0.78rem;
   color: #7578a0;
   text-align: right;
+}
+
+/* ── Markdown → PDF ──────────────────────────────────────────────────────── */
+.mdpdf-workspace {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 1rem;
+  min-height: 70vh;
+}
+
+.mdpdf-editor-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: #0c0e22;
+  border: 1px solid #1e2244;
+  border-radius: 16px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.mdpdf-editor-pane .speech-panel__header {
+  flex-shrink: 0;
+}
+
+.mdpdf-editor-pane .dropzone {
+  margin: 0.75rem 1.1rem 0;
+  flex-shrink: 0;
+}
+
+.mdpdf-editor-pane .error {
+  margin: 0 1.1rem;
+}
+
+.mdpdf-editor-pane .btn-convert {
+  margin: 0 1.1rem 0.5rem;
+  width: auto;
+}
+
+.mdpdf-editor-pane .pdf-progress-track {
+  margin: 0 1.1rem;
+}
+
+.mdpdf-editor-pane .pdf-progress-label {
+  margin: 0.3rem 1.1rem 0;
+}
+
+.mdpdf-textarea {
+  flex: 1;
+  min-height: 240px;
+  margin: 0 1.1rem;
+  background: #080919;
+  color: #c8cef4;
+  border: 1px solid #1e2140;
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-family: ui-monospace, 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.83rem;
+  line-height: 1.6;
+  resize: none;
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+
+.mdpdf-textarea:focus {
+  outline: none;
+  border-color: #4f5db0;
+}
+
+.mdpdf-preview-pane {
+  display: flex;
+  flex-direction: column;
+  background: #0c0e22;
+  border: 1px solid #1e2244;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.mdpdf-pdf-pane {
+  display: flex;
+  flex-direction: column;
+  background: #0c0e22;
+  border: 1px solid #1e2244;
+  border-radius: 16px;
+  overflow: hidden;
+  grid-column: 1 / -1;   /* spans both columns */
+  height: 840px;
+}
+
+.mdpdf-pdf-pane .pdf-col__header {
+  flex-shrink: 0;
+}
+
+.mdpdf-pdf-pane .pdf-iframe {
+  flex: 1;
+  border: none;
+  width: 100%;
+}
+
+.mdpdf-markdown {
+  flex: 1;
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+  font-size: 0.88rem;
+}
+
+/* Mermaid SVGs inside the preview */
+.mdpdf-markdown .mermaid svg {
+  max-width: 100%;
+  height: auto;
 }
 
 /* ── TTS ────────────────────────────────────────────────────────────────── */
