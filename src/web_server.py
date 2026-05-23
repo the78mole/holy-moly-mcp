@@ -29,10 +29,10 @@ from src.services.converter import (
     get_model_status,
     is_model_cached,
     process_audio,
-    process_pdf_placeholder,
     start_model_loading,
     switch_model,
 )
+from src.services.pdf_converter import convert_pdf_bytes, convert_pdf_from_url
 from src.services.tts_local import (
     get_ogg_path,
     get_tts_model_info,
@@ -210,11 +210,45 @@ async def convert_speech_to_text_api(
 
 
 @app.post("/api/v1/convert/pdf-to-markdown")
-async def convert_pdf_to_markdown_api(file: UploadFile = File(...)) -> dict[str, str]:
-    """Placeholder endpoint for PDF-to-Markdown conversion."""
+async def convert_pdf_to_markdown_api(
+    file: UploadFile = File(...),
+    timeout: int = Query(default=0, ge=0, description="Subprocess timeout in seconds (0 = use server default)"),
+    workers: int = Query(default=0, ge=0, description="marker_single --workers (0 = use server default)"),
+) -> dict[str, str]:
+    """Convert an uploaded PDF to Markdown using marker_single."""
     try:
-        message = await process_pdf_placeholder(file.filename or "upload.pdf")
-        return {"result": message}
+        payload = await file.read()
+        markdown = await convert_pdf_bytes(
+            payload,
+            file.filename or "upload.pdf",
+            timeout=timeout or None,
+            workers=workers or None,
+        )
+        return {"result": markdown}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        print(traceback.format_exc(), file=sys.stderr, flush=True)
+        raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
+
+
+@app.post("/api/v1/convert/pdf-from-url")
+async def convert_pdf_from_url_api(payload: dict) -> dict[str, str]:
+    """Download a PDF from a URL and convert it to Markdown."""
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Field 'url' is required.")
+    timeout: int = int(payload.get("timeout") or 0)
+    workers: int = int(payload.get("workers") or 0)
+    try:
+        markdown = await convert_pdf_from_url(
+            url,
+            timeout=timeout or None,
+            workers=workers or None,
+        )
+        return {"result": markdown}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error

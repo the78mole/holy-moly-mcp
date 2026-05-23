@@ -22,6 +22,7 @@ dependencies = [
   "pydantic",
   "httpx",
   "python-multipart",
+  "marker-pdf",
 ]
 
 [project.scripts]

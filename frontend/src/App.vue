@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { marked } from 'marked'
 
 const file = ref(null)
 const mode = ref('plain')
@@ -7,6 +8,7 @@ const loading = ref(false)
 const output = ref('')
 const error = ref('')
 const activeSection = ref('speech')
+const docSubSection = ref('pdf-md')
 const speakerRecognition = ref(false)
 const audioTypes = '.mp3,.ogg,.wav,.m4a,.flac,.mp4'
 
@@ -321,6 +323,99 @@ function stopRecording() {
   }
 }
 
+// ── PDF → Markdown ───────────────────────────────────────────────────────────
+
+const pdfInputMode  = ref('file')      // 'file' | 'url'
+const pdfFile       = ref(null)
+const pdfUrl        = ref('')
+const pdfMarkdown   = ref('')
+const pdfLoading    = ref(false)
+const pdfError      = ref('')
+const pdfCopied     = ref(false)
+const showPdfPreview = ref(false)
+const pdfObjectUrl  = ref('')          // blob URL for PDF iframe
+const pdfTimeout    = ref(0)           // 0 = Server-Default
+const pdfWorkers    = ref(0)           // 0 = Server-Default
+const pdfElapsed    = ref(0)           // seconds since conversion started
+let _pdfTimer       = null
+const pdfEffectiveTimeout = computed(() => pdfTimeout.value > 0 ? pdfTimeout.value : 300)
+const pdfTimeoutBarStyle  = computed(() => ({
+  width: `${Math.min(100, (pdfElapsed.value / pdfEffectiveTimeout.value) * 100)}%`,
+}))
+
+const pdfDropLabel = computed(() =>
+  pdfFile.value ? `Ausgewählt: ${pdfFile.value.name}` : 'PDF hier ablegen oder klicken…',
+)
+
+const pdfRendered = computed(() =>
+  pdfMarkdown.value ? marked.parse(pdfMarkdown.value) : '',
+)
+
+function onPdfSelect(e) {
+  const f = e.target?.files?.[0]
+  if (f) { pdfFile.value = f; pdfError.value = ''; _updatePdfObjectUrl(f) }
+}
+
+function onPdfDrop(e) {
+  e.preventDefault()
+  const f = e.dataTransfer?.files?.[0]
+  if (f) { pdfFile.value = f; pdfError.value = ''; _updatePdfObjectUrl(f) }
+}
+
+function _updatePdfObjectUrl(f) {
+  if (pdfObjectUrl.value) URL.revokeObjectURL(pdfObjectUrl.value)
+  pdfObjectUrl.value = URL.createObjectURL(f)
+}
+
+async function convertPdf() {
+  pdfError.value = ''
+  pdfMarkdown.value = ''
+  pdfLoading.value = true
+  pdfElapsed.value = 0
+  _pdfTimer = setInterval(() => { pdfElapsed.value++ }, 1000)
+  try {
+    let res
+    if (pdfInputMode.value === 'url') {
+      if (!pdfUrl.value.trim()) { pdfError.value = 'Bitte eine URL eingeben.'; return }
+      res = await fetch(`${apiBaseUrl}/api/v1/convert/pdf-from-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: pdfUrl.value.trim(),
+          ...(pdfTimeout.value > 0 ? { timeout: pdfTimeout.value } : {}),
+          ...(pdfWorkers.value > 0 ? { workers: pdfWorkers.value } : {}),
+        }),
+      })
+    } else {
+      if (!pdfFile.value) { pdfError.value = 'Bitte ein PDF auswählen.'; return }
+      const fd = new FormData()
+      fd.append('file', pdfFile.value)
+      const params = new URLSearchParams()
+      if (pdfTimeout.value > 0) params.set('timeout', String(pdfTimeout.value))
+      if (pdfWorkers.value > 0) params.set('workers', String(pdfWorkers.value))
+      const qs = params.toString() ? '?' + params.toString() : ''
+      res = await fetch(`${apiBaseUrl}/api/v1/convert/pdf-to-markdown${qs}`, { method: 'POST', body: fd })
+    }
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Konvertierung fehlgeschlagen.')
+    pdfMarkdown.value = data.result ?? ''
+  } catch (err) {
+    pdfError.value = err instanceof Error ? err.message : 'Unbekannter Fehler'
+  } finally {
+    clearInterval(_pdfTimer)
+    _pdfTimer = null
+    pdfElapsed.value = 0
+    pdfLoading.value = false
+  }
+}
+
+async function copyPdfMarkdown() {
+  if (!pdfMarkdown.value) return
+  await navigator.clipboard.writeText(pdfMarkdown.value)
+  pdfCopied.value = true
+  setTimeout(() => { pdfCopied.value = false }, 1500)
+}
+
 // ── TTS model state ─────────────────────────────────────────────────────────
 
 const availableTtsModels = ref([])
@@ -494,9 +589,22 @@ async function downloadOgg() {
         <button class="nav-item nav-item--disabled" disabled>
           <span class="nav-item__icon">🖼</span> Images
         </button>
-        <button class="nav-item nav-item--disabled" disabled>
+        <button
+          class="nav-item"
+          :class="{ 'nav-item--active': activeSection === 'documents' }"
+          @click="activeSection = 'documents'"
+        >
           <span class="nav-item__icon">📄</span> Documents
         </button>
+        <template v-if="activeSection === 'documents'">
+          <button
+            class="nav-item nav-item--sub"
+            :class="{ 'nav-item--active': docSubSection === 'pdf-md' }"
+            @click="docSubSection = 'pdf-md'"
+          >
+            <span class="nav-item__icon">🔄</span> PDF → Markdown
+          </button>
+        </template>
       </div>
     </nav>
 
@@ -847,14 +955,116 @@ async function downloadOgg() {
 
       <!-- ══ Documents ════════════════════════════════════════════════════ -->
       <section v-else-if="activeSection === 'documents'">
-        <div class="section-header">
-          <h1>Documents</h1>
-          <p>Dokumentenverarbeitung und -konvertierung</p>
-        </div>
-        <div class="coming-soon">
-          <div class="coming-soon__icon">📄</div>
-          <p class="coming-soon__title">Noch nicht verfügbar</p>
-          <p>PDF- und Dokumentenverarbeitung kommt in einer zukünftigen Version.</p>
+
+        <!-- ── PDF → Markdown ──────────────────────────────────────────── -->
+        <div v-if="docSubSection === 'pdf-md'" class="pdf-workspace">
+
+          <!-- Input panel -->
+          <div class="pdf-input-panel">
+            <div class="speech-panel__header">
+              <span class="speech-panel__icon">🔄</span>
+              <h2 class="speech-panel__title">PDF → Markdown</h2>
+            </div>
+
+            <!-- Source toggle -->
+            <div class="mode-segmented" style="margin-bottom: 0.75rem">
+              <button :class="{ active: pdfInputMode === 'file' }" @click="pdfInputMode = 'file'">Datei</button>
+              <button :class="{ active: pdfInputMode === 'url'  }" @click="pdfInputMode = 'url'">URL</button>
+            </div>
+
+            <!-- File drop zone -->
+            <label v-if="pdfInputMode === 'file'" class="dropzone" @dragover.prevent @drop="onPdfDrop">
+              <input type="file" accept=".pdf" @change="onPdfSelect" />
+              <span>{{ pdfDropLabel }}</span>
+            </label>
+
+            <!-- URL input -->
+            <input
+              v-else
+              class="pdf-url-input"
+              type="url"
+              v-model="pdfUrl"
+              placeholder="https://example.com/document.pdf"
+            />
+
+            <p v-if="pdfError" class="error">{{ pdfError }}</p>
+
+            <!-- PDF preview toggle -->
+            <div class="option-row" style="margin-top: 0.5rem">
+              <span class="option-label">Original-PDF einblenden</span>
+              <label class="toggle">
+                <input type="checkbox" v-model="showPdfPreview"
+                  :disabled="pdfInputMode === 'url' && !pdfMarkdown" />
+                <span class="toggle__slider" />
+              </label>
+            </div>
+
+            <!-- Advanced options: timeout + workers -->
+            <div class="pdf-adv-options">
+              <label class="pdf-adv-label">
+                Timeout (s)
+                <input class="pdf-adv-input" type="number" v-model.number="pdfTimeout"
+                  min="0" max="3600" placeholder="Server-Default" />
+              </label>
+              <label class="pdf-adv-label">
+                Threads
+                <input class="pdf-adv-input" type="number" v-model.number="pdfWorkers"
+                  min="0" max="32" placeholder="Server-Default" />
+              </label>
+            </div>
+
+            <button
+              class="btn-convert"
+              :disabled="pdfLoading || (pdfInputMode === 'file' && !pdfFile) || (pdfInputMode === 'url' && !pdfUrl.trim())"
+              @click="convertPdf"
+              style="margin-top: 0.75rem"
+            >
+              <span v-if="pdfLoading" class="spinner" />
+              {{ pdfLoading ? 'Konvertiere…' : 'Konvertieren' }}
+            </button>
+
+            <!-- Timeout progress bar -->
+            <div v-if="pdfLoading" class="pdf-progress-track">
+              <div class="pdf-progress-bar" :style="pdfTimeoutBarStyle" />
+            </div>
+            <p v-if="pdfLoading" class="pdf-progress-label">
+              {{ pdfElapsed }}s&nbsp;/&nbsp;{{ pdfEffectiveTimeout }}s
+            </p>
+          </div>
+
+          <!-- Output area -->
+          <div v-if="pdfMarkdown || pdfLoading" class="pdf-output-area" :class="{ 'pdf-output-area--3col': showPdfPreview && pdfObjectUrl }">
+
+            <!-- Markdown editor -->
+            <div class="pdf-col">
+              <div class="pdf-col__header">
+                <span>Markdown</span>
+                <button class="btn-copy" :class="{ 'btn-copy--done': pdfCopied }" @click="copyPdfMarkdown">
+                  {{ pdfCopied ? '✓ Kopiert' : 'Kopieren' }}
+                </button>
+              </div>
+              <textarea class="pdf-md-editor" v-model="pdfMarkdown" spellcheck="false" />
+            </div>
+
+            <!-- Live preview -->
+            <div class="pdf-col">
+              <div class="pdf-col__header"><span>Vorschau</span></div>
+              <div class="pdf-md-preview markdown-body" v-html="pdfRendered" />
+            </div>
+
+            <!-- Optional PDF iframe -->
+            <div v-if="showPdfPreview && pdfObjectUrl" class="pdf-col">
+              <div class="pdf-col__header"><span>Original PDF</span></div>
+              <iframe class="pdf-iframe" :src="pdfObjectUrl" />
+            </div>
+          </div>
+
+          <!-- Loading state before result -->
+          <div v-else-if="pdfLoading" class="pdf-converting">
+            <span class="spinner" />
+            <span>marker_single läuft… das kann je nach PDF-Größe etwas dauern.</span>
+          </div>
+
         </div>
       </section>
 
@@ -1342,6 +1552,209 @@ async function downloadOgg() {
   border-radius: 2px 2px 0 0;
   background: linear-gradient(to top, #22c55e 0%, #facc15 65%, #ef4444 100%);
   transition: height 60ms linear;
+}
+
+/* ── Documents / PDF ────────────────────────────────────────────────────── */
+.nav-item--sub {
+  padding-left: 1.6rem;
+  font-size: 0.81rem;
+  color: #4a5080;
+}
+.nav-item--sub.nav-item--active {
+  color: #a5b4fc;
+  background: #10122a;
+}
+
+.pdf-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: 100%;
+}
+
+.pdf-input-panel {
+  background: #0d0f26;
+  border: 1px solid #1e2140;
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+}
+
+.pdf-url-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  background: #0b0d1e;
+  border: 1px solid #252840;
+  border-radius: 8px;
+  color: #e0e0f0;
+  font-size: 0.88rem;
+  font-family: inherit;
+  margin-bottom: 0.25rem;
+}
+.pdf-url-input:focus {
+  outline: none;
+  border-color: #4f46e5;
+}
+
+.pdf-adv-options {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.6rem;
+}
+.pdf-adv-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: #7578a0;
+  flex: 1;
+}
+.pdf-adv-input {
+  padding: 0.3rem 0.5rem;
+  background: #0b0d1e;
+  border: 1px solid #252840;
+  border-radius: 6px;
+  color: #c8cadf;
+  font-size: 0.82rem;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.pdf-adv-input:focus {
+  outline: none;
+  border-color: #4f46e5;
+}
+
+.pdf-output-area {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  flex: 1;
+  min-height: 0;
+}
+.pdf-output-area--3col {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.pdf-col {
+  display: flex;
+  flex-direction: column;
+  background: #0d0f26;
+  border: 1px solid #1e2140;
+  border-radius: 10px;
+  overflow: hidden;
+  min-height: 500px;
+}
+
+.pdf-col__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.45rem 0.85rem;
+  background: #0b0d1f;
+  border-bottom: 1px solid #1e2140;
+  font-size: 0.8rem;
+  color: #7578a0;
+  flex-shrink: 0;
+}
+
+.pdf-md-editor {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: #090b1c;
+  color: #c8cadf;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  padding: 0.85rem;
+  tab-size: 2;
+}
+.pdf-md-editor:focus { outline: none; }
+
+.pdf-md-preview {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+  font-size: 0.88rem;
+  line-height: 1.7;
+  color: #d4d6ee;
+}
+
+/* minimal markdown-body styles */
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  color: #a5b4fc;
+  margin: 1em 0 0.4em;
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: 1.4em; border-bottom: 1px solid #1e2140; padding-bottom: 0.25em; }
+.markdown-body h2 { font-size: 1.15em; }
+.markdown-body h3 { font-size: 1em; }
+.markdown-body p  { margin: 0.6em 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.4em; margin: 0.5em 0; }
+.markdown-body li { margin: 0.2em 0; }
+.markdown-body code {
+  background: #141628;
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.88em;
+  color: #93c5fd;
+}
+.markdown-body pre {
+  background: #0a0c1e;
+  border: 1px solid #1e2140;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.markdown-body pre code { background: none; padding: 0; color: #b0c4de; }
+.markdown-body blockquote {
+  border-left: 3px solid #4f46e5;
+  padding-left: 0.75rem;
+  margin: 0.5em 0;
+  color: #7578a0;
+}
+.markdown-body table { border-collapse: collapse; width: 100%; margin: 0.75em 0; }
+.markdown-body th, .markdown-body td { border: 1px solid #1e2140; padding: 0.4em 0.65em; }
+.markdown-body th { background: #0b0d1f; color: #a5b4fc; }
+.markdown-body img { max-width: 100%; border-radius: 4px; }
+.markdown-body a { color: #818cf8; }
+
+.pdf-iframe {
+  flex: 1;
+  border: none;
+  width: 100%;
+}
+
+.pdf-converting {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #7578a0;
+  font-size: 0.88rem;
+  padding: 1.5rem;
+}
+.pdf-progress-track {
+  margin-top: 0.75rem;
+  height: 6px;
+  background: #1e2040;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.pdf-progress-bar {
+  height: 100%;
+  background: linear-gradient(to right, #22c55e, #eab308, #ef4444);
+  background-size: 100% 100%;
+  border-radius: 3px;
+  transition: width 0.9s linear;
+}
+.pdf-progress-label {
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: #7578a0;
+  text-align: right;
 }
 
 /* ── TTS ────────────────────────────────────────────────────────────────── */
