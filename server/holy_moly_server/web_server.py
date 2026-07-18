@@ -19,8 +19,9 @@ from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from src.services.converter import (
+from holy_moly_server.services.converter import (
     MODEL_METADATA,
     get_active_model_name,
     get_available_languages,
@@ -32,9 +33,9 @@ from src.services.converter import (
     start_model_loading,
     switch_model,
 )
-from src.services.md_to_pdf import convert_html_to_pdf
-from src.services.pdf_converter import convert_pdf_bytes, convert_pdf_from_url
-from src.services.tts_local import (
+from holy_moly_server.services.md_to_pdf import convert_html_to_pdf
+from holy_moly_server.services.pdf_converter import convert_pdf_bytes, convert_pdf_from_url
+from holy_moly_server.services.tts_local import (
     get_ogg_path,
     get_tts_model_info,
     get_tts_model_status,
@@ -46,6 +47,20 @@ from src.services.tts_local import (
 )
 
 DEFAULT_UPLOAD_AUDIO_FILENAME = "upload.wav"
+
+
+class PdfFromUrlRequest(BaseModel):
+    url: str = Field(..., description="URL of the remote PDF file to download and convert.")
+    timeout: int = Field(0, ge=0, description="Subprocess timeout in seconds (0 = server default).")
+    workers: int = Field(0, ge=0, description="marker_single --workers (0 = server default).")
+
+
+class MarkdownToPdfRequest(BaseModel):
+    html: str = Field(..., description="Rendered HTML document (e.g. Markdown rendered to HTML beforehand).")
+
+
+class TtsModelLoadRequest(BaseModel):
+    model: str = Field(..., description="TTS model id to switch to, as returned by /api/v1/tts/model/info.")
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +113,15 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     yield
 
 
-app = FastAPI(title="Holy Moly Web Suite", lifespan=lifespan)
+app = FastAPI(
+    title="Holy Moly Web Suite",
+    description=(
+        "Speech-to-text, PDF-to-Markdown, Markdown-to-PDF and text-to-speech conversion API. "
+        "Use this page to try requests manually — see the Vue web UI at `/` for the full experience."
+    ),
+    version="0.2.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -127,7 +150,7 @@ async def _model_status_generator():
         await asyncio.sleep(0.5)
 
 
-@app.get("/api/v1/model/status")
+@app.get("/api/v1/model/status", tags=["Model"])
 async def model_status_stream():
     """Server-Sent Events stream of model loading progress."""
     return StreamingResponse(
@@ -140,7 +163,7 @@ async def model_status_stream():
     )
 
 
-@app.get("/api/v1/model/info")
+@app.get("/api/v1/model/info", tags=["Model"])
 async def model_info():
     """Return the active model, device info, enriched model list, and available languages."""
     device = os.environ.get("HOLY_MOLY_DEVICE", "cpu")
@@ -162,7 +185,7 @@ async def model_info():
     }
 
 
-@app.post("/api/v1/model/load")
+@app.post("/api/v1/model/load", tags=["Model"])
 async def model_load(model: str = Body(..., embed=True)):
     """Switch the active Whisper model."""
     try:
@@ -172,7 +195,7 @@ async def model_load(model: str = Body(..., embed=True)):
     return {"status": "loading", "model": model}
 
 
-@app.get("/api/v1/system/info")
+@app.get("/api/v1/system/info", tags=["System"])
 async def system_info():
     """Return hardware information available to the server process."""
     return {
@@ -187,7 +210,7 @@ async def system_info():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/v1/convert/speech-to-text")
+@app.post("/api/v1/convert/speech-to-text", tags=["Conversion"])
 async def convert_speech_to_text_api(
     file: UploadFile = File(...),
     mode: str = Query(default="plain"),
@@ -210,7 +233,7 @@ async def convert_speech_to_text_api(
         raise HTTPException(status_code=500, detail=f"Conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/pdf-to-markdown")
+@app.post("/api/v1/convert/pdf-to-markdown", tags=["Conversion"])
 async def convert_pdf_to_markdown_api(
     file: UploadFile = File(...),
     timeout: int = Query(default=0, ge=0, description="Subprocess timeout in seconds (0 = use server default)"),
@@ -233,19 +256,17 @@ async def convert_pdf_to_markdown_api(
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/pdf-from-url")
-async def convert_pdf_from_url_api(payload: dict) -> dict[str, str]:
+@app.post("/api/v1/convert/pdf-from-url", tags=["Conversion"])
+async def convert_pdf_from_url_api(payload: PdfFromUrlRequest) -> dict[str, str]:
     """Download a PDF from a URL and convert it to Markdown."""
-    url = (payload.get("url") or "").strip()
+    url = payload.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="Field 'url' is required.")
-    timeout: int = int(payload.get("timeout") or 0)
-    workers: int = int(payload.get("workers") or 0)
     try:
         markdown = await convert_pdf_from_url(
             url,
-            timeout=timeout or None,
-            workers=workers or None,
+            timeout=payload.timeout or None,
+            workers=payload.workers or None,
         )
         return {"result": markdown}
     except ValueError as error:
@@ -255,10 +276,10 @@ async def convert_pdf_from_url_api(payload: dict) -> dict[str, str]:
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/markdown-to-pdf")
-async def markdown_to_pdf_api(payload: dict) -> Response:
+@app.post("/api/v1/convert/markdown-to-pdf", tags=["Conversion"])
+async def markdown_to_pdf_api(payload: MarkdownToPdfRequest) -> Response:
     """Convert a rendered HTML document (from Markdown) to PDF via WeasyPrint."""
-    html = (payload.get("html") or "").strip()
+    html = payload.html.strip()
     if not html:
         raise HTTPException(status_code=400, detail="Field 'html' is required.")
     try:
@@ -278,13 +299,13 @@ async def markdown_to_pdf_api(payload: dict) -> Response:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/v1/convert/text-to-speech/models")
+@app.get("/api/v1/convert/text-to-speech/models", tags=["Text-to-Speech"])
 async def tts_models():
     """Return the list of available Kokoro TTS voices."""
     return {"voices": get_tts_voices()}
 
 
-@app.get("/api/v1/convert/text-to-speech/stream")
+@app.get("/api/v1/convert/text-to-speech/stream", tags=["Text-to-Speech"])
 async def tts_stream(
     text: str = Query(..., min_length=1, max_length=2000),
     voice_id: str = Query(...),
@@ -310,7 +331,7 @@ async def tts_stream(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/v1/convert/text-to-speech/download/{task_id}")
+@app.get("/api/v1/convert/text-to-speech/download/{task_id}", tags=["Text-to-Speech"])
 async def tts_download(task_id: str):
     """Return the saved OGG file for a completed TTS task."""
     try:
@@ -342,13 +363,13 @@ async def _tts_model_status_generator():
         await asyncio.sleep(0.3)
 
 
-@app.get("/api/v1/tts/model/info")
+@app.get("/api/v1/tts/model/info", tags=["Text-to-Speech"])
 async def tts_model_info():
     """Return available TTS models and which one is active."""
     return get_tts_model_info()
 
 
-@app.get("/api/v1/tts/model/status")
+@app.get("/api/v1/tts/model/status", tags=["Text-to-Speech"])
 async def tts_model_status():
     """SSE stream of TTS model loading progress."""
     return StreamingResponse(
@@ -358,13 +379,12 @@ async def tts_model_status():
     )
 
 
-@app.post("/api/v1/tts/model/load")
-async def tts_model_load(payload: dict):
+@app.post("/api/v1/tts/model/load", tags=["Text-to-Speech"])
+async def tts_model_load(payload: TtsModelLoadRequest):
     """Switch to a different TTS model (downloads if needed)."""
-    model_name = payload.get("model", "")
     try:
-        await switch_tts_model(model_name)
-        return {"status": "loading", "model": model_name}
+        await switch_tts_model(payload.model)
+        return {"status": "loading", "model": payload.model}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -373,7 +393,10 @@ async def tts_model_load(payload: dict):
 # SPA static file serving
 # ---------------------------------------------------------------------------
 
-dist_dir = Path(__file__).resolve().parents[1] / "dist"
+dist_dir = Path(
+    os.environ.get("HOLY_MOLY_DIST_DIR")
+    or Path(__file__).resolve().parents[1] / "dist"
+)
 assets_dir = dist_dir / "assets"
 
 if assets_dir.exists():
@@ -403,8 +426,8 @@ def main() -> None:
     import os
 
     host = os.getenv("HOLY_MOLY_HOST", "0.0.0.0")
-    port = int(os.getenv("HOLY_MOLY_PORT", "8000"))
-    uvicorn.run("src.web_server:app", host=host, port=port, reload=False)
+    port = int(os.getenv("HOLY_MOLY_PORT", "8080"))
+    uvicorn.run("holy_moly_server.web_server:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

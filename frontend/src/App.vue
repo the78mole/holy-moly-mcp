@@ -776,6 +776,9 @@ async function downloadOgg() {
             <span class="nav-item__icon">📝</span> Markdown → PDF
           </button>
         </template>
+        <a class="nav-item" href="/docs" target="_blank" rel="noopener">
+          <span class="nav-item__icon">📚</span> API Docs
+        </a>
       </div>
     </nav>
 

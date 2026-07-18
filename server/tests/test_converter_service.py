@@ -4,8 +4,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.services import converter
-from src.services.converter import ModelPhase, TranscriptionMode, _ModelState
+from holy_moly_server.services import converter
+from holy_moly_server.services.converter import ModelPhase, TranscriptionMode, _ModelState
 
 
 def _make_ready_state(transcript: str = "hello world") -> _ModelState:

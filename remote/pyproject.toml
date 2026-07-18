@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "holy-moly-mcp-remote"
+version = "0.2.0"
+description = "Lightweight stdio MCP client that proxies conversion tool calls to a remote holy-moly-server deployment over HTTP"
+requires-python = ">=3.10"
+dependencies = [
+  "fastmcp",
+  "httpx",
+]
+
+[project.scripts]
+holy-moly-mcp-remote = "holy_moly_remote.mcp_remote_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["holy_moly_remote"]

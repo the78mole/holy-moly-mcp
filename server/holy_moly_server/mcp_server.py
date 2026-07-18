@@ -11,7 +11,7 @@ from fastmcp import FastMCP
 from fastmcp.server.providers.base import Provider
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, model_validator
 
-from src.services.converter import (
+from holy_moly_server.services.converter import (
     TranscriptionMode,
     process_audio_from_path,
     process_audio_from_url,

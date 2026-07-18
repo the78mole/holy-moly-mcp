@@ -1,0 +1,32 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "holy-moly-api-url",
+      "description": "Base URL of the remote holy-moly-web deployment (host running `docker compose up`)",
+      "default": "http://172.22.7.224:8087"
+    }
+  ],
+  "servers": {
+    "holy-moly-remote": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--package", "holy-moly-mcp-remote", "holy-moly-mcp-remote"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HOLY_MOLY_API_URL": "${input:holy-moly-api-url}"
+      }
+    },
+    "holy-moly": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--package", "holy-moly-server", "holy-moly-mcp"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HOLY_MOLY_WHISPER_MODEL": "small",
+        "HOLY_MOLY_DEVICE": "cpu",
+        "HOLY_MOLY_COMPUTE_TYPE": "int8"
+      }
+    }
+  }
+}

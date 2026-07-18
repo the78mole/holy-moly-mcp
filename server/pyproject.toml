@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "holy-moly-server"
+version = "0.2.0"
+description = "Local MCP stdio server and FastAPI web backend doing speech/PDF/TTS conversion in-process"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp[cli]",
+  "fastmcp",
+  "fastapi",
+  "uvicorn",
+  "faster-whisper",
+  "kokoro-onnx",
+  "piper-tts",
+  "soundfile",
+  "numpy",
+  "huggingface_hub",
+  "pydantic",
+  "httpx",
+  "python-multipart",
+  "marker-pdf",
+  "weasyprint",
+]
+
+[project.scripts]
+holy-moly-mcp = "holy_moly_server.mcp_server:main"
+holy-moly-web = "holy_moly_server.web_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["holy_moly_server"]

@@ -4,26 +4,12 @@ services:
       context: .
       dockerfile: Dockerfile.web
     ports:
-      - "8080:8000"
+      - "8080:8080"
     environment:
       - HOLY_MOLY_HOST=0.0.0.0
-      - HOLY_MOLY_PORT=8000
+      - HOLY_MOLY_PORT=8080
       - HF_HOME=/models
       - MARKER_TIMEOUT=600
       - MARKER_WORKERS=12
     volumes:
       - ./whisper-models:/models
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "5173:5173"
-    environment:
-      - VITE_API_BASE_URL=http://localhost:8080
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules   # node_modules bleibt im Container
-    depends_on:
-      - web
