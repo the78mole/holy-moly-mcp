@@ -162,3 +162,29 @@ the global default set at startup (`HOLY_MOLY_WHISPER_MODEL` / `HOLY_MOLY_TTS_MO
 
 Switching model is not instant — the previous model is unloaded and the new one loaded (and
 downloaded on first use), so the first request after a switch is slower than subsequent ones.
+
+## Releasing `holy-moly-mcp-remote` to PyPI
+
+[`.github/workflows/publish-remote.yml`](.github/workflows/publish-remote.yml) publishes the
+`remote` member to [PyPI](https://pypi.org/project/holy-moly-mcp-remote/) automatically. It
+triggers on every push to `main` that touches `remote/**`; there is no manual version bump or tag
+to push — [`paulhatch/semantic-version`](https://github.com/paulhatch/semantic-version) computes
+the next version from commit messages since the last `remote-v*` tag:
+
+| Commit message contains | Bump |
+|---|---|
+| `!:` or `BREAKING CHANGE:` | major |
+| `feat:` (or `feat(scope):`) | minor |
+| anything else | patch |
+
+The workflow then patches `remote/pyproject.toml`'s version, builds the package, pushes the
+`remote-vX.Y.Z` tag, creates a matching GitHub release, and publishes to PyPI via
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) — no PyPI token stored in
+the repo.
+
+**One-time setup required on PyPI (not something this repo or I can do for you):** on
+[pypi.org](https://pypi.org), add a *pending trusted publisher* for a new project named
+`holy-moly-mcp-remote`, pointing at this GitHub repository, workflow file
+`publish-remote.yml`, and (optionally) environment name `pypi`. If you use the environment name,
+also create a matching `pypi` environment under the repo's Settings → Environments (add
+protection rules there if you want a manual approval gate before publishing).

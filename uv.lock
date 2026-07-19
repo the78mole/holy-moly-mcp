@@ -1247,7 +1247,7 @@ wheels = [
 
 [[package]]
 name = "holy-moly-mcp-remote"
-version = "0.2.0"
+version = "0.0.0"
 source = { editable = "remote" }
 dependencies = [
     { name = "fastmcp" },
