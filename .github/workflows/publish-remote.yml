@@ -29,14 +29,15 @@ jobs:
       # anything else -> patch bump.
       - name: Determine next version
         id: version
-        uses: paulhatch/semantic-version@v6
+        uses: paulhatch/semantic-version@v5.4.0
         with:
-          tag_prefix: "remote-v"
-          namespace: remote
-          change_path: "remote"
-          major_pattern: "/!:|BREAKING CHANGE:/"
-          minor_pattern: "/feat(\\(.+\\))?:/"
+          branch: main
+          tag_prefix: "v"
           version_format: "${major}.${minor}.${patch}"
+          major_pattern: "/^(feat|fix|refactor)!:/"
+          minor_pattern: "/^feat:/"
+          bump_each_commit: true
+          search_commit_body: true
 
   release:
     needs: version
