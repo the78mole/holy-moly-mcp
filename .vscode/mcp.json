@@ -1,0 +1,61 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "holy-moly-api-url",
+      "description": "Base URL of the remote holy-moly-web deployment (host running `docker compose up`)",
+      "default": "http://172.22.7.224:8087"
+    },
+    {
+      "type": "pickString",
+      "id": "holy-moly-whisper-model",
+      "description": "faster-whisper model to load at startup (local in-process server)",
+      "options": ["tiny", "base", "small", "medium", "large-v2", "large-v3"],
+      "default": "small"
+    },
+    {
+      "type": "pickString",
+      "id": "holy-moly-default-whisper-model",
+      "description": "Default speech-to-text model to request on the remote deployment (per-call `model` tool argument overrides this)",
+      "options": [
+        { "label": "Server default (no override)", "value": "" },
+        "tiny", "base", "small", "medium", "large-v2", "large-v3"
+      ],
+      "default": ""
+    },
+    {
+      "type": "pickString",
+      "id": "holy-moly-default-tts-model",
+      "description": "Default text-to-speech model to request on the remote deployment for Kokoro voices (per-call `model` tool argument overrides this)",
+      "options": [
+        { "label": "Server default (no override)", "value": "" },
+        "kokoro-v1.0-int8", "kokoro-v1.0-fp16", "kokoro-v1.0"
+      ],
+      "default": ""
+    }
+  ],
+  "servers": {
+    "holy-moly-remote": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--package", "holy-moly-mcp-remote", "holy-moly-mcp-remote"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HOLY_MOLY_API_URL": "${input:holy-moly-api-url}",
+        "HOLY_MOLY_DEFAULT_WHISPER_MODEL": "${input:holy-moly-default-whisper-model}",
+        "HOLY_MOLY_DEFAULT_TTS_MODEL": "${input:holy-moly-default-tts-model}"
+      }
+    },
+    "holy-moly": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--package", "holy-moly-server", "holy-moly-mcp"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HOLY_MOLY_WHISPER_MODEL": "${input:holy-moly-whisper-model}",
+        "HOLY_MOLY_DEVICE": "cpu",
+        "HOLY_MOLY_COMPUTE_TYPE": "int8"
+      }
+    }
+  }
+}

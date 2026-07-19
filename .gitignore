@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+
+# Whisper model cache (bind-mounted into Docker)
+whisper-models/
+
+# TTS temporary output files
+temp/
+
+# Frontend dependencies and build artifacts
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# Local environment files
+.env

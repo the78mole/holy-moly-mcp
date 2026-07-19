@@ -1,0 +1,36 @@
+FROM node:20-bookworm-slim AS frontend-builder
+
+WORKDIR /repo/frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm install --no-audit --no-fund
+
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY server/pyproject.toml /app/
+RUN pip install --no-cache-dir uv \
+    && python -c "import tomllib; data=tomllib.load(open('pyproject.toml','rb')); [print(d) for d in data['project']['dependencies']]" > /tmp/requirements.txt \
+    && uv pip install --system -r /tmp/requirements.txt
+
+COPY server/holy_moly_server /app/holy_moly_server
+RUN uv pip install --system --no-deps .
+
+COPY --from=frontend-builder /repo/server/dist /app/dist
+ENV HOLY_MOLY_DIST_DIR=/app/dist
+
+EXPOSE 8080
+CMD ["holy-moly-web"]

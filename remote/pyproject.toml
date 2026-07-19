@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "holy-moly-mcp-remote"
+# Placeholder — overwritten at build time by the publish-remote CI workflow
+# (paulhatch/semantic-version computes the real version from commit history).
+version = "0.0.0"
+description = "Lightweight stdio MCP client that proxies conversion tool calls to a remote holy-moly-server deployment over HTTP"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Daniel Glaser", email = "me@the78mole.de" },
+]
+keywords = ["mcp", "model-context-protocol", "proxy", "speech-to-text", "text-to-speech", "pdf"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications",
+]
+dependencies = [
+  "fastmcp",
+  "httpx",
+]
+
+[project.urls]
+Homepage = "https://github.com/the78mole/holy-moly-mcp"
+Repository = "https://github.com/the78mole/holy-moly-mcp"
+Issues = "https://github.com/the78mole/holy-moly-mcp/issues"
+
+[project.scripts]
+holy-moly-mcp-remote = "holy_moly_remote.mcp_remote_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["holy_moly_remote"]
