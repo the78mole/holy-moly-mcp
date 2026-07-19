@@ -169,16 +169,16 @@ downloaded on first use), so the first request after a switch is slower than sub
 `remote` member to [PyPI](https://pypi.org/project/holy-moly-mcp-remote/) automatically. It
 triggers on every push to `main` that touches `remote/**`; there is no manual version bump or tag
 to push — [`paulhatch/semantic-version`](https://github.com/paulhatch/semantic-version) computes
-the next version from commit messages since the last `remote-v*` tag:
+the next version from commit messages since the last `v*` tag:
 
-| Commit message contains | Bump |
+| Commit message starts with | Bump |
 |---|---|
-| `!:` or `BREAKING CHANGE:` | major |
-| `feat:` (or `feat(scope):`) | minor |
-| anything else | patch |
+| `feat!:`, `fix!:` or `refactor!:` | major |
+| `feat:` | minor |
+| anything else | patch (increments on every such commit) |
 
 The workflow then patches `remote/pyproject.toml`'s version, builds the package, pushes the
-`remote-vX.Y.Z` tag, creates a matching GitHub release, and publishes to PyPI via
+`vX.Y.Z` tag, creates a matching GitHub release, and publishes to PyPI via
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC) — no PyPI token stored in
 the repo.
 

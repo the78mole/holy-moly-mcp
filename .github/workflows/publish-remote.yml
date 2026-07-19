@@ -20,16 +20,16 @@ jobs:
       version_tag: ${{ steps.version.outputs.version_tag }}
       should_release: ${{ steps.version.outputs.changed == 'true' && steps.version.outputs.is_tagged != 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      # Commit message conventions (checked against commits under remote/ since the last
-      # remote-v* tag): `!:` or `BREAKING CHANGE:` -> major bump, `feat:` -> minor bump,
-      # anything else -> patch bump.
+      # Commit message conventions (checked against commit subject/body since the last v*
+      # tag): `feat!:`/`fix!:`/`refactor!:` -> major bump, `feat:` -> minor bump, anything
+      # else -> patch bump (bump_each_commit: patch increments on every non-major/minor commit).
       - name: Determine next version
         id: version
-        uses: paulhatch/semantic-version@v5.4.0
+        uses: paulhatch/semantic-version@v6.0.3
         with:
           branch: main
           tag_prefix: "v"
@@ -48,7 +48,7 @@ jobs:
       contents: write # to push the release tag and create the GitHub release
       id-token: write # for PyPI trusted publishing (OIDC)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set package version
         run: |
@@ -68,7 +68,7 @@ jobs:
           git push origin "${{ needs.version.outputs.version_tag }}"
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.version.outputs.version_tag }}
           name: "holy-moly-mcp-remote ${{ needs.version.outputs.version }}"
