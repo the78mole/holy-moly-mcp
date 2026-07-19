@@ -52,6 +52,7 @@ class SpeechToolRequest(BaseModel):
     url: Optional[HttpUrl] = None
     mode: TranscriptionMode = TranscriptionMode.PLAIN
     language: Optional[str] = None
+    model: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_source(self) -> "SpeechToolRequest":
@@ -67,6 +68,7 @@ async def convert_speech_to_text(
     url: Optional[HttpUrl] = None,
     mode: TranscriptionMode = TranscriptionMode.PLAIN,
     language: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Convert speech audio to text from a local file path or remote URL.
 
@@ -76,15 +78,23 @@ async def convert_speech_to_text(
         mode: Transcription mode – ``plain`` (default) or ``minutes``.
         language: ISO 639-1 language code (e.g. ``de``, ``en``, ``fr``).
                   Omit or pass ``null`` to let the model auto-detect.
+        model: faster-whisper model name (e.g. ``tiny``, ``small``, ``large-v3``) to use for
+               this request. Switches the loaded model if it differs from the currently active
+               one (set at startup via ``HOLY_MOLY_WHISPER_MODEL``). Omit to keep using
+               whichever model is already active.
     """
     try:
-        request = SpeechToolRequest(file_path=file_path, url=url, mode=mode, language=language)
+        request = SpeechToolRequest(file_path=file_path, url=url, mode=mode, language=language, model=model)
 
         if request.file_path:
-            return await process_audio_from_path(request.file_path, request.mode, language=request.language)
+            return await process_audio_from_path(
+                request.file_path, request.mode, language=request.language, model=request.model
+            )
 
         if request.url:
-            return await process_audio_from_url(str(request.url), request.mode, language=request.language)
+            return await process_audio_from_url(
+                str(request.url), request.mode, language=request.language, model=request.model
+            )
 
         return "Speech-to-text conversion failed: no source was provided."
     except ValidationError as error:

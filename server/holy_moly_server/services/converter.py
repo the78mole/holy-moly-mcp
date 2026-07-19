@@ -317,8 +317,17 @@ async def process_audio(
     filename: str,
     mode: str | TranscriptionMode,
     language: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> str:
-    """Convert audio bytes to transcript using faster-whisper."""
+    """Convert audio bytes to transcript using faster-whisper.
+
+    Args:
+        model: Optional faster-whisper model name (e.g. ``small``, ``large-v3``) to use for
+            this request. If it differs from the currently active model, the model is
+            switched (unloaded/reloaded) before transcription. Omit to use whichever model
+            is already active (``HOLY_MOLY_WHISPER_MODEL`` at startup, or the last one
+            switched to).
+    """
     if not file_bytes:
         raise ValueError("Input audio data is empty.")
 
@@ -326,8 +335,11 @@ async def process_audio(
     _assert_audio_extension(safe_filename)
     normalized_mode = _normalize_mode(mode)
 
-    await start_model_loading()
-    model = await _wait_for_model()
+    if model and model != get_active_model_name():
+        await switch_model(model)
+    else:
+        await start_model_loading()
+    whisper_model = await _wait_for_model()
 
     suffix = Path(safe_filename).suffix or ".wav"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -335,7 +347,7 @@ async def process_audio(
         tmp_path = tmp.name
 
     try:
-        transcript = await asyncio.to_thread(_transcribe_sync, model, tmp_path, language or None)
+        transcript = await asyncio.to_thread(_transcribe_sync, whisper_model, tmp_path, language or None)
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -351,6 +363,7 @@ async def process_audio_from_path(
     file_path: str,
     mode: str | TranscriptionMode,
     language: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Load an absolute local file path and transcribe it."""
     path = Path(file_path)
@@ -360,7 +373,9 @@ async def process_audio_from_path(
         raise FileNotFoundError(f"Audio file not found: {file_path}")
 
     file_bytes = await asyncio.to_thread(path.read_bytes)
-    return await process_audio(file_bytes=file_bytes, filename=path.name, mode=mode, language=language)
+    return await process_audio(
+        file_bytes=file_bytes, filename=path.name, mode=mode, language=language, model=model
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,10 +421,13 @@ async def process_audio_from_url(
     url: str,
     mode: str | TranscriptionMode,
     language: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Download a remote audio file and transcribe it."""
     file_bytes, filename = await download_audio_from_url(url)
-    return await process_audio(file_bytes=file_bytes, filename=filename, mode=mode, language=language)
+    return await process_audio(
+        file_bytes=file_bytes, filename=filename, mode=mode, language=language, model=model
+    )
 
 
 async def process_pdf_placeholder(filename: str) -> str:

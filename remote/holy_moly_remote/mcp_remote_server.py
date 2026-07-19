@@ -3,10 +3,14 @@
 Unlike ``mcp_server.py`` (which loads faster-whisper/marker-pdf/WeasyPrint locally),
 this server does no heavy processing itself. It runs locally over stdio but forwards
 every tool call as an HTTP request to an already-running ``holy-moly-web`` instance,
-configured via the ``HOLY_MOLY_API_URL`` environment variable::
+configured via the ``HOLY_MOLY_API_URL`` environment variable. Optional default models for
+requests that don't specify one explicitly can be set via ``HOLY_MOLY_DEFAULT_WHISPER_MODEL``
+and ``HOLY_MOLY_DEFAULT_TTS_MODEL``::
 
     "env": {
-        "HOLY_MOLY_API_URL": "http://172.22.7.224:8087"
+        "HOLY_MOLY_API_URL": "http://172.22.7.224:8087",
+        "HOLY_MOLY_DEFAULT_WHISPER_MODEL": "small",
+        "HOLY_MOLY_DEFAULT_TTS_MODEL": "kokoro-v1.0-int8"
     }
 """
 
@@ -37,6 +41,7 @@ async def convert_speech_to_text(
     url: Optional[str] = None,
     mode: str = "plain",
     language: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Transcribe speech audio to text via the remote holy-moly-web API.
 
@@ -45,6 +50,9 @@ async def convert_speech_to_text(
         url: URL of a remote audio file. Provide exactly one of `file_path` or `url`.
         mode: Transcription mode - `plain` (default) or `minutes`.
         language: ISO 639-1 language code (`de`, `en`, `fr`, ...). Omit to auto-detect.
+        model: faster-whisper model name (e.g. `tiny`, `small`, `large-v3`) to request on the
+               remote server. Falls back to `HOLY_MOLY_DEFAULT_WHISPER_MODEL` if set, otherwise
+               the server keeps using whichever model is already active.
     """
     if bool(file_path) == bool(url):
         return "Input validation failed: provide exactly one of `file_path` or `url`."
@@ -53,6 +61,9 @@ async def convert_speech_to_text(
         params = {"mode": mode}
         if language:
             params["language"] = language
+        effective_model = model or os.environ.get("HOLY_MOLY_DEFAULT_WHISPER_MODEL")
+        if effective_model:
+            params["model"] = effective_model
 
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             if url:
@@ -165,21 +176,33 @@ async def list_tts_voices() -> str:
 
 
 @mcp.tool()
-async def convert_text_to_speech(text: str, voice_id: str, output_path: str) -> str:
+async def convert_text_to_speech(
+    text: str,
+    voice_id: str,
+    output_path: str,
+    model: Optional[str] = None,
+) -> str:
     """Synthesise speech from text via the remote holy-moly-web API and save it locally as WAV.
 
     Args:
         text: The text to synthesise (max 2000 characters).
         voice_id: Voice id as returned by `list_tts_voices` (e.g. `de_thorsten`).
         output_path: Absolute local path where the resulting WAV file should be written.
+        model: Kokoro TTS model to request (e.g. `kokoro-v1.0-fp16`). Ignored for Piper-backed
+               (German) voices. Falls back to `HOLY_MOLY_DEFAULT_TTS_MODEL` if set, otherwise
+               the server keeps using whichever model is already active.
     """
     try:
         task_id = os.urandom(8).hex()
+        params = {"text": text, "voice_id": voice_id, "task_id": task_id}
+        effective_model = model or os.environ.get("HOLY_MOLY_DEFAULT_TTS_MODEL")
+        if effective_model:
+            params["model"] = effective_model
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             async with client.stream(
                 "GET",
                 f"{_api_base()}/api/v1/convert/text-to-speech/stream",
-                params={"text": text, "voice_id": voice_id, "task_id": task_id},
+                params=params,
             ) as response:
                 response.raise_for_status()
                 with open(output_path, "wb") as out_file:

@@ -258,6 +258,21 @@ async def switch_tts_model(model_name: str) -> None:
     await start_tts_model_loading(model_name)
 
 
+async def _wait_for_tts_ready(timeout: float = 600.0) -> None:
+    """Await Kokoro model readiness after a (re)load; raises on error or timeout."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        status = get_tts_model_status()
+        if status["phase"] == "ready":
+            return
+        if status["phase"] == "error":
+            raise RuntimeError(f"TTS model loading failed: {status['message']}")
+        if loop.time() > deadline:
+            raise TimeoutError("Timed out waiting for TTS model to load.")
+        await asyncio.sleep(0.3)
+
+
 # ---------------------------------------------------------------------------
 # Audio helpers
 # ---------------------------------------------------------------------------
@@ -335,12 +350,24 @@ def _get_piper_voice(voice_id: str) -> object:
 # ---------------------------------------------------------------------------
 
 
-async def stream_tts(
+async def prepare_tts(
     text: str,
     voice_id: str,
     task_id: str,
-) -> AsyncGenerator[bytes, None]:
-    """Async generator: WAV header + int16 PCM chunks. Saves OGG on completion."""
+    model: str | None = None,
+) -> str:
+    """Validate inputs and switch the TTS model if requested; returns the resolved backend.
+
+    Must be awaited *before* calling :func:`stream_tts`. Async generators only start running
+    their body once iterated, so raising from inside one is too late for a caller to convert
+    into a clean HTTP error — validation and any model switch therefore happen here instead.
+
+    Args:
+        model: Optional Kokoro model name (e.g. ``kokoro-v1.0-fp16``) to use for this
+            request. If it differs from the currently active model, the model is switched
+            before synthesis. Ignored for Piper-backed (German) voices, which always use
+            their own single model.
+    """
     if not text.strip():
         raise ValueError("Text must not be empty.")
     if len(text) > MAX_TEXT_LENGTH:
@@ -349,8 +376,24 @@ async def stream_tts(
         raise ValueError(f"Unknown voice '{voice_id}'.")
     validate_task_id(task_id)
 
-    loop = asyncio.get_event_loop()
     backend = _VOICE_BACKEND[voice_id]
+    if model and backend == "kokoro" and model != _active_tts_model:
+        await switch_tts_model(model)
+        await _wait_for_tts_ready()
+    return backend
+
+
+async def stream_tts(
+    text: str,
+    voice_id: str,
+    task_id: str,
+    backend: str,
+) -> AsyncGenerator[bytes, None]:
+    """Async generator: WAV header + int16 PCM chunks. Saves OGG on completion.
+
+    Call :func:`prepare_tts` first to validate inputs and resolve ``backend``.
+    """
+    loop = asyncio.get_event_loop()
 
     # ── Piper backend (German voices) ───────────────────────────────────────
     if backend == "piper":

@@ -118,22 +118,33 @@ Whisper/marker-pdf/WeasyPrint locally. Only needs the `remote` member's minimal 
 GPU/CPU model downloads on the machine running VS Code. Exposes: `convert_speech_to_text`,
 `convert_pdf_to_markdown`, `convert_html_to_pdf`, `list_tts_voices`, `convert_text_to_speech`.
 
-On first start, VS Code prompts for the API URL (input `holy-moly-api-url`) and remembers it.
+On first start, VS Code prompts for the API URL and default models, and remembers the answers
+(reset via the MCP panel if you want to change them later).
 
 | Env var | Description |
 |---|---|
 | `HOLY_MOLY_API_URL` | Base URL of the remote `holy-moly-web` FastAPI backend |
+| `HOLY_MOLY_DEFAULT_WHISPER_MODEL` | Default speech-to-text model to request (blank = leave the server's active model as-is) |
+| `HOLY_MOLY_DEFAULT_TTS_MODEL` | Default Kokoro TTS model to request (blank = leave the server's active model as-is) |
+
+Both `convert_speech_to_text` and `convert_text_to_speech` also accept an optional `model`
+argument per call, which overrides the env-var default for just that one request.
 
 ### `holy-moly` — local in-process server
 
-Runs `holy-moly-mcp` from the `server` member, doing transcription/PDF/TTS processing in-process.
-The heavy dependencies are installed on demand the first time this server starts.
+Runs `holy-moly-mcp` from the `server` member (speech-to-text, plus a PDF-to-Markdown
+placeholder), loading faster-whisper in-process. The heavy dependencies are installed on demand
+the first time this server starts.
 
 | Env var | Default | Description |
 |---|---|---|
-| `HOLY_MOLY_WHISPER_MODEL` | `base` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`, …) |
+| `HOLY_MOLY_WHISPER_MODEL` | `base` | Whisper model to load at startup (`tiny`, `base`, `small`, `medium`, `large-v3`, …) |
 | `HOLY_MOLY_DEVICE` | `cpu` | Inference device (`cpu` or `cuda`) |
 | `HOLY_MOLY_COMPUTE_TYPE` | `int8` | Quantisation type (`int8`, `float16`, `float32`) |
+
+`convert_speech_to_text` also accepts an optional `model` argument per call, which switches the
+loaded model on the fly if it differs from the current one (adds latency for the first call after
+a switch, and affects concurrent requests — it's a single shared model instance, not a pool).
 
 ## API endpoints
 
@@ -141,3 +152,13 @@ The heavy dependencies are installed on demand the first time this server starts
 `/docs` (Swagger UI, request bodies pre-filled with schema/example values) and `/redoc`; the raw
 schema is at `/openapi.json`. Endpoints are grouped under the `Model`, `System`, `Conversion`, and
 `Text-to-Speech` tags.
+
+Both conversion endpoints that have a model concept take it as an optional parameter, on top of
+the global default set at startup (`HOLY_MOLY_WHISPER_MODEL` / `HOLY_MOLY_TTS_MODEL`):
+
+- `POST /api/v1/convert/speech-to-text?model=small` — faster-whisper model for this request
+- `GET /api/v1/convert/text-to-speech/stream?model=kokoro-v1.0-fp16` — Kokoro model for this
+  request (ignored for Piper-backed German voices)
+
+Switching model is not instant — the previous model is unloaded and the new one loaded (and
+downloaded on first use), so the first request after a switch is slower than subsequent ones.

@@ -40,10 +40,10 @@ from holy_moly_server.services.tts_local import (
     get_tts_model_info,
     get_tts_model_status,
     get_tts_voices,
+    prepare_tts,
     start_tts_model_loading,
     stream_tts,
     switch_tts_model,
-    validate_task_id,
 )
 
 DEFAULT_UPLOAD_AUDIO_FILENAME = "upload.wav"
@@ -215,6 +215,12 @@ async def convert_speech_to_text_api(
     file: UploadFile = File(...),
     mode: str = Query(default="plain"),
     language: str | None = Query(default=None),
+    model: str | None = Query(
+        default=None,
+        description="faster-whisper model to use for this request (e.g. `small`, `large-v3`). "
+        "Switches the active model if it differs from the currently loaded one. "
+        "Omit to use whichever model is already active.",
+    ),
 ) -> dict[str, str]:
     """Transcribe uploaded audio file into text."""
     try:
@@ -224,6 +230,7 @@ async def convert_speech_to_text_api(
             file.filename or DEFAULT_UPLOAD_AUDIO_FILENAME,
             mode,
             language=language or None,
+            model=model or None,
         )
         return {"result": transcript, "mode": mode}
     except ValueError as error:
@@ -310,25 +317,27 @@ async def tts_stream(
     text: str = Query(..., min_length=1, max_length=2000),
     voice_id: str = Query(...),
     task_id: str = Query(...),
+    model: str | None = Query(
+        default=None,
+        description="Kokoro TTS model to use for this request (e.g. `kokoro-v1.0-fp16`). "
+        "Ignored for Piper-backed (German) voices. Omit to use the currently active model.",
+    ),
 ):
     """Stream synthesised speech as chunked WAV audio; saves OGG to temp/."""
     try:
-        validate_task_id(task_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    try:
-        return StreamingResponse(
-            stream_tts(text, voice_id, task_id),
-            media_type="audio/wav",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "X-Task-Id": task_id,
-            },
-        )
+        backend = await prepare_tts(text, voice_id, task_id, model=model or None)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return StreamingResponse(
+        stream_tts(text, voice_id, task_id, backend),
+        media_type="audio/wav",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Task-Id": task_id,
+        },
+    )
 
 
 @app.get("/api/v1/convert/text-to-speech/download/{task_id}", tags=["Text-to-Speech"])
