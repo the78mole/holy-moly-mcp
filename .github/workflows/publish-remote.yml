@@ -29,7 +29,7 @@ jobs:
       # else -> patch bump (bump_each_commit: patch increments on every non-major/minor commit).
       - name: Determine next version
         id: version
-        uses: paulhatch/semantic-version@v6.0.3
+        uses: paulhatch/semantic-version@v6.0.4
         with:
           branch: main
           tag_prefix: "v"
