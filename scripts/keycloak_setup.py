@@ -12,7 +12,9 @@ Environment:
     KC_ADMIN_CLIENT_SECRET  its secret                           (kc.sh bootstrap-admin service)
     KC_ADMIN_TOKEN      alternatively a ready admin access token
     KC_TEMP_PASSWORD_FILE  with --create-user: write the temporary password to this file (mode 600) instead of stdout
-    KC_REALM            realm to create/update            (default: holy-moly)
+    KC_REALM            realm to use                      (default: chaintronics)
+    KC_ADMIN_REALM      realm that issues the admin token (default: master; a realm-scoped service
+                        account such as svc-admin in chaintronics needs KC_ADMIN_REALM=chaintronics)
     HOLY_MOLY_PUBLIC_URL  public URL of holy-moly-web, used for redirect URIs and web origins
     HOLY_MOLY_DEV_ORIGIN  extra dev origin                 (default: http://localhost:5173)
 
@@ -21,6 +23,13 @@ Usage:
     python scripts/keycloak_setup.py --grant-admin daniel   # also give realm user 'daniel' the admin role
     python scripts/keycloak_setup.py --create-user daniel   # create the user if missing (temporary password printed)
     python scripts/keycloak_setup.py --verify               # end-to-end check with a temporary service-account client
+    python scripts/keycloak_setup.py --grant-user alice     # give realm user 'alice' holy-moly-user (shared realms)
+    python scripts/keycloak_setup.py --manage-realm-settings  # also write token lifespans etc. (own realm only)
+    python scripts/keycloak_setup.py --default-user-role    # every realm user gets holy-moly-user automatically
+    python scripts/keycloak_setup.py --delete-realm holy-moly  # remove a realm (master admin required)
+
+In a shared realm (the default, chaintronics) the script never touches realm settings and does not
+make holy-moly-user a default role: access is granted per user with --grant-user / --grant-admin.
 
 --verify creates a confidential client `holy-moly-verify` (service account, realm role holy-moly-user,
 same audience mapper as the SPA), fetches a client_credentials token, calls the backend at
@@ -109,8 +118,9 @@ def admin_token(base_url: str) -> str:
             "password": env("KC_ADMIN_PASSWORD"),
         }
     form = urllib.parse.urlencode(grant).encode()
+    admin_realm = os.environ.get("KC_ADMIN_REALM", "master")
     req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/realms/master/protocol/openid-connect/token", data=form, method="POST"
+        f"{base_url.rstrip('/')}/realms/{admin_realm}/protocol/openid-connect/token", data=form, method="POST"
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as res:
@@ -119,8 +129,18 @@ def admin_token(base_url: str) -> str:
         sys.exit(f"admin login failed: HTTP {exc.code}: {exc.read().decode(errors='replace')[:300]}")
 
 
-def ensure_realm(kc: Keycloak, realm: str) -> None:
-    existing = {r["realm"] for r in kc.get("/admin/realms")}
+def realm_exists(kc: Keycloak, realm: str) -> bool:
+    # GET /admin/realms (list) needs master-level rights; a realm-scoped admin may only read its own.
+    try:
+        kc.get(f"/admin/realms/{realm}")
+        return True
+    except SystemExit as exc:
+        if "HTTP 404" in str(exc) or "HTTP 403" in str(exc):
+            return False
+        raise
+
+
+def ensure_realm(kc: Keycloak, realm: str, manage_settings: bool) -> None:
     desired = {
         "realm": realm,
         "enabled": True,
@@ -133,15 +153,18 @@ def ensure_realm(kc: Keycloak, realm: str) -> None:
         "bruteForceProtected": True,
         "sslRequired": "external",
     }
-    if realm in existing:
-        kc.put(f"/admin/realms/{realm}", desired)
-        print(f"realm {realm}: updated")
+    if realm_exists(kc, realm):
+        if manage_settings:
+            kc.put(f"/admin/realms/{realm}", desired)
+            print(f"realm {realm}: settings updated")
+        else:
+            print(f"realm {realm}: exists, settings left untouched (use --manage-realm-settings to write them)")
     else:
         kc.post("/admin/realms", desired)
         print(f"realm {realm}: created")
 
 
-def ensure_roles(kc: Keycloak, realm: str) -> None:
+def ensure_roles(kc: Keycloak, realm: str, default_user_role: bool) -> None:
     roles = {r["name"]: r for r in kc.get(f"/admin/realms/{realm}/roles")}
     for name, description in (
         (ROLE_USER, "May use every conversion endpoint and MCP tool"),
@@ -153,6 +176,9 @@ def ensure_roles(kc: Keycloak, realm: str) -> None:
         else:
             print(f"role {name}: exists")
 
+    if not default_user_role:
+        print(f"default role: not changed; grant {ROLE_USER} per user with --grant-user")
+        return
     # Every user of the realm gets holy-moly-user automatically via the realm's default role.
     realm_rep = kc.get(f"/admin/realms/{realm}")
     default_role_name = realm_rep["defaultRole"]["name"]
@@ -273,18 +299,31 @@ def create_user(kc: Keycloak, realm: str, username: str) -> None:
         print(f"  {temp_password}")
 
 
-def grant_admin(kc: Keycloak, realm: str, username: str) -> None:
+def grant_roles(kc: Keycloak, realm: str, username: str, roles: list[str]) -> None:
     found = kc.get(f"/admin/realms/{realm}/users?username={urllib.parse.quote(username)}&exact=true")
     if not found:
         sys.exit(f"user {username!r} not found in realm {realm}; create it first (--create-user) or federate it")
     user_id = found[0]["id"]
     current = {r["name"] for r in kc.get(f"/admin/realms/{realm}/users/{user_id}/role-mappings/realm")}
-    if ROLE_ADMIN in current:
-        print(f"user {username}: already has {ROLE_ADMIN}")
+    missing = [r for r in roles if r not in current]
+    if not missing:
+        print(f"user {username}: already has {', '.join(roles)}")
         return
-    role = kc.get(f"/admin/realms/{realm}/roles/{ROLE_ADMIN}")
-    kc.post(f"/admin/realms/{realm}/users/{user_id}/role-mappings/realm", [role])
-    print(f"user {username}: granted {ROLE_ADMIN}")
+    reps = [kc.get(f"/admin/realms/{realm}/roles/{r}") for r in missing]
+    kc.post(f"/admin/realms/{realm}/users/{user_id}/role-mappings/realm", reps)
+    print(f"user {username}: granted {', '.join(missing)}")
+
+
+def grant_admin(kc: Keycloak, realm: str, username: str) -> None:
+    grant_roles(kc, realm, username, [ROLE_USER, ROLE_ADMIN])
+
+
+def delete_realm(kc: Keycloak, realm: str) -> None:
+    if not realm_exists(kc, realm):
+        print(f"realm {realm}: does not exist (or not visible), nothing to delete")
+        return
+    kc.delete(f"/admin/realms/{realm}")
+    print(f"realm {realm}: deleted")
 
 
 def _http_status(url: str, token: str) -> int:
@@ -380,8 +419,12 @@ def verify(kc: Keycloak, base_url: str, realm: str, public_url: str) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--grant-admin", metavar="USERNAME", help="give this realm user the holy-moly-admin role")
+    parser.add_argument("--grant-admin", metavar="USERNAME", help="give this realm user holy-moly-admin (and holy-moly-user)")
+    parser.add_argument("--grant-user", metavar="USERNAME", action="append", default=[], help="give this realm user holy-moly-user")
     parser.add_argument("--create-user", metavar="USERNAME", help="create this realm user if missing")
+    parser.add_argument("--manage-realm-settings", action="store_true", help="write realm settings (token lifespans, ...) even if the realm exists")
+    parser.add_argument("--default-user-role", action="store_true", help="make holy-moly-user part of the realm's default role")
+    parser.add_argument("--delete-realm", metavar="REALM", help="delete this realm and exit (needs a master admin)")
     parser.add_argument(
         "--verify",
         action="store_true",
@@ -390,17 +433,22 @@ def main() -> None:
     args = parser.parse_args()
 
     base_url = env("KC_URL")
-    realm = os.environ.get("KC_REALM", "holy-moly")
+    realm = os.environ.get("KC_REALM", "chaintronics")
+    kc = Keycloak(base_url, admin_token(base_url))
+    if args.delete_realm:
+        delete_realm(kc, args.delete_realm)
+        return
     public_url = env("HOLY_MOLY_PUBLIC_URL").rstrip("/")
     dev_origin = os.environ.get("HOLY_MOLY_DEV_ORIGIN", "http://localhost:5173").rstrip("/")
 
-    kc = Keycloak(base_url, admin_token(base_url))
-    ensure_realm(kc, realm)
-    ensure_roles(kc, realm)
+    ensure_realm(kc, realm, args.manage_realm_settings)
+    ensure_roles(kc, realm, args.default_user_role)
     ensure_api_client(kc, realm)
     ensure_web_client(kc, realm, public_url, dev_origin)
     if args.create_user:
         create_user(kc, realm, args.create_user)
+    for username in args.grant_user:
+        grant_roles(kc, realm, username, [ROLE_USER])
     if args.grant_admin:
         grant_admin(kc, realm, args.grant_admin)
     verified = verify(kc, base_url, realm, public_url) if args.verify else None
