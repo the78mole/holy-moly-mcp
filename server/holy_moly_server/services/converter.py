@@ -193,6 +193,12 @@ def get_active_model_name() -> str:
         return _state.active_model_name
 
 
+def get_loaded_model_instance():
+    """Return the loaded WhisperModel when the active model is ready, else None (benchmark reuse)."""
+    with _state_lock:
+        return _state.instance if _state.phase == ModelPhase.READY else None
+
+
 def _model_hf_repo(model_name: str) -> str:
     """Map a faster-whisper model name to its HuggingFace repository path.
 

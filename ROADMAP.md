@@ -26,6 +26,8 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 - [ ] **TTS-Audio streamen statt puffern** – seit der Auth-Umstellung lädt das Frontend den WAV-Stream
       komplett und spielt ihn als Blob ab. Mit `MediaSource` ließe sich wieder ab dem ersten Chunk
       abspielen.
+- [ ] **STT-Geschwindigkeit im Betrieb messen** – Audiodauer und Rechenzeit jeder Transkription festhalten
+      und den Benchmark-Wert laufend verfeinern; vor dem Start die voraussichtliche Dauer einer Datei anzeigen.
 - [ ] **Rate-Limits pro Nutzer** – `subject` aus dem Access-Token liegt vor; Limit pro Nutzer für
       Konvertierungen, etwa mit `slowapi`.
 - [ ] **Audit-Log** – wer hat wann welches Tool mit welchem Modell genutzt; Identität kommt aus der
@@ -42,6 +44,9 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 
 ## Erledigt
 
+- 2026-10-18 **STT-Benchmark** – Admin-Knopf misst alle heruntergeladenen Whisper-Modelle mit einem
+  mitgelieferten 15-s-Sample; Ergebnis „s je Minute Audio“ je Modell, Gerät und Rechentyp in SQLite, Anzeige in
+  der Modellkarte. **Modell-Cache** – korrekte Erkennung (large-v3-turbo), Entfernen-Knopf für Whisper und Kokoro.
 - 2026-10-18 **MCP über HTTP** – Endpunkt `/mcp-server/mcp` in der FastAPI-App, RFC-9728-Metadata, gleiche
   Auth wie die REST-API. **Persönliche API-Tokens** – pro Nutzer in der Web-UI erstellen und widerrufen,
   SQLite im Volume `holy-moly-data`.

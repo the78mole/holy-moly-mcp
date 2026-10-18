@@ -25,6 +25,7 @@ from holy_moly_server import api_tokens, local_accounts
 from holy_moly_server.auth import ensure_auth_configured, require_admin, require_user
 from holy_moly_server.mcp_http import mount_mcp
 from holy_moly_server.mcp_server import create_server
+from holy_moly_server.services import benchmark
 from holy_moly_server.services.converter import (
     MODEL_METADATA,
     delete_model_cache,
@@ -191,6 +192,7 @@ async def model_info():
     """Return the active model, device info, enriched model list, and available languages."""
     device = os.environ.get("HOLY_MOLY_DEVICE", "cpu")
     compute_type = os.environ.get("HOLY_MOLY_COMPUTE_TYPE", "int8")
+    benchmarks = benchmark.results_for_current_hardware()
     return {
         "active": get_active_model_name(),
         "device": device,
@@ -201,6 +203,7 @@ async def model_info():
                 "cached": is_model_cached(m),
                 "path": get_model_cache_path(m),
                 "size_on_disk_mb": get_model_cache_size_mb(m),
+                "benchmark": benchmarks.get(m),
                 **MODEL_METADATA.get(m, {}),
             }
             for m in get_available_models()
@@ -217,6 +220,50 @@ async def model_load(model: str = Body(..., embed=True)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "loading", "model": model}
+
+
+class BenchmarkRequest(BaseModel):
+    models: list[str] | None = Field(None, description="Models to measure; default: every downloaded model.")
+
+
+@app.post("/api/v1/model/benchmark", tags=["Model"], **AS_ADMIN)
+async def model_benchmark_start(payload: BenchmarkRequest | None = None):
+    """Measure transcription speed of the downloaded models on this machine (runs in the background)."""
+    try:
+        models = await benchmark.start_benchmark(payload.models if payload else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "running", "models": models}
+
+
+async def _benchmark_status_generator():
+    last = None
+    while True:
+        state = benchmark.get_run_state()
+        if state != last:
+            yield f"data: {json.dumps(state)}\n\n"
+            last = state
+        if state["phase"] != "running":
+            break
+        await asyncio.sleep(1.0)
+
+
+@app.get("/api/v1/model/benchmark/status", tags=["Model"], **AS_USER)
+async def model_benchmark_status():
+    """Server-Sent Events stream of the running benchmark (ends when it is idle, done or failed)."""
+    return StreamingResponse(
+        _benchmark_status_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/v1/model/benchmark", tags=["Model"], **AS_USER)
+async def model_benchmark_results():
+    """All stored benchmark results (every device/compute type)."""
+    return {"results": [r.as_dict() for r in benchmark.get_store().all()], "run": benchmark.get_run_state()}
 
 
 @app.delete("/api/v1/model/cache/{model_name}", tags=["Model"], **AS_ADMIN)

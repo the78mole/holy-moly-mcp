@@ -179,6 +179,44 @@ async function applyModelSelection() {
   connectModelStatus()
 }
 
+// ── STT benchmark (admin) ───────────────────────────────────────────────────
+
+const benchState = ref({ phase: 'idle', current: null, done: 0, total: 0, results: [], error: null })
+let benchStream = null
+
+const benchRunning = computed(() => benchState.value.phase === 'running')
+
+function connectBenchmarkStatus() {
+  benchStream?.close()
+  benchStream = sseStream('/api/v1/model/benchmark/status', (raw) => {
+    try {
+      benchState.value = JSON.parse(raw)
+      if (benchState.value.phase !== 'running') {
+        benchStream?.close(); benchStream = null
+        fetchModelInfo()   // pick up the new numbers
+      }
+    } catch (_) {}
+  }, () => { benchStream = null })
+}
+
+async function startBenchmark() {
+  const cached = availableModels.value.filter(m => m.cached).map(m => m.name)
+  if (!cached.length) return
+  if (!confirm(`Benchmark für ${cached.length} heruntergeladene Modelle starten (${cached.join(', ')})? Jedes Modell transkribiert ein 15-Sekunden-Sample zweimal; große Modelle brauchen auf CPU mehrere Minuten.`)) return
+  const res = await apiFetch('/api/v1/model/benchmark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) { alert(`Benchmark konnte nicht gestartet werden: ${data.detail || res.status}`); return }
+  benchState.value = { phase: 'running', current: null, done: 0, total: data.models.length, results: [], error: null }
+  connectBenchmarkStatus()
+}
+
+function formatBenchmark(b) {
+  if (!b) return null
+  const perMinute = Math.round(b.seconds_per_audio_minute)
+  const date = new Date(b.measured_at * 1000).toLocaleDateString('de-DE')
+  return { perMinute, rtf: b.realtime_factor, date }
+}
+
 // ── Model cache removal (admin) ─────────────────────────────────────────────
 
 const cacheBusy = ref(false)
@@ -254,6 +292,7 @@ watch(appReady, (ready) => { if (ready) loadAll(); else stopStreams() })
 onUnmounted(() => {
   eventSource?.close()
   ttsEventSource?.close()
+  benchStream?.close()
   if (_recordingTimer) clearInterval(_recordingTimer)
   if (_mediaRecorder && isRecording.value) _mediaRecorder.stop()
   _stopLevelMeter()
@@ -923,6 +962,16 @@ async function downloadOgg() {
                 >
                   Entfernen
                 </button>
+                <button
+                  v-if="isAdmin"
+                  class="btn-load btn-load--bench"
+                  :disabled="modelLoading || benchRunning || !availableModels.some(m => m.cached)"
+                  title="Transkriptionsgeschwindigkeit aller heruntergeladenen Modelle auf diesem Server messen"
+                  @click="startBenchmark"
+                >
+                  <span v-if="benchRunning" class="spinner" />
+                  {{ benchRunning ? `Benchmark ${benchState.done}/${benchState.total}` : 'Benchmark' }}
+                </button>
                 <div class="model-debug">
                   <span
                     v-for="m in availableModels"
@@ -932,12 +981,19 @@ async function downloadOgg() {
                       'model-chip--active': m.name === activeModel,
                       'model-chip--cached': m.cached && m.name !== activeModel,
                     }"
-                    :title="m.path"
-                  >{{ m.name }}</span>
+                    :title="m.benchmark ? `≈ ${Math.round(m.benchmark.seconds_per_audio_minute)} s je Minute Audio` : m.path"
+                  >{{ m.name }}<span v-if="m.benchmark" class="model-chip__bench">{{ Math.round(m.benchmark.seconds_per_audio_minute) }} s/min</span></span>
                 </div>
               </div>
 
               <!-- Modell-Infokarte -->
+              <div v-if="benchRunning" class="bench-note">
+                <span class="spinner" /> Benchmark läuft: {{ benchState.current || 'Modell wird geladen' }} ({{ benchState.done }}/{{ benchState.total }} fertig)
+              </div>
+              <div v-else-if="benchState.phase === 'error'" class="bench-note bench-note--error">
+                Benchmark fehlgeschlagen: {{ benchState.error }}
+              </div>
+
               <div v-if="selectedModelMeta" class="model-card">
                 <div class="model-card__head">
                   <span class="model-card__name">{{ selectedModelMeta.name }}</span>
@@ -958,7 +1014,11 @@ async function downloadOgg() {
                   <dt>Tempo</dt>
                   <dd>
                     <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
-                    <span class="model-card__muted">auf {{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
+                    <template v-if="formatBenchmark(selectedModelMeta.benchmark)">
+                      <span class="model-card__measured">≈ {{ formatBenchmark(selectedModelMeta.benchmark).perMinute }} s je Minute Audio</span>
+                      <span class="model-card__muted" :title="`Realtime-Faktor ${formatBenchmark(selectedModelMeta.benchmark).rtf}`">gemessen {{ formatBenchmark(selectedModelMeta.benchmark).date }} auf {{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
+                    </template>
+                    <span v-else class="model-card__muted">auf {{ deviceInfo.device }} · {{ deviceInfo.compute_type }}<template v-if="isAdmin && selectedModelMeta.cached"> · noch nicht gemessen</template></span>
                   </dd>
                   <template v-if="systemInfo">
                     <dt>Hardware</dt>
@@ -2502,6 +2562,36 @@ pre {
 .btn-load--remove:hover:not(:disabled) {
   background: #2a1d44;
   color: #e0c4ff;
+}
+
+.btn-load--bench {
+  background: transparent;
+  border: 1px solid #1e3a5f;
+  color: #7dd3fc;
+}
+
+.btn-load--bench:hover:not(:disabled) {
+  background: #0c2238;
+  color: #bae6fd;
+}
+
+.bench-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #7dd3fc;
+  margin: 0 0 0.6rem;
+}
+
+.bench-note--error { color: #f87171; }
+
+.model-card__measured { color: #7dd3fc; font-weight: 600; }
+
+.model-chip__bench {
+  margin-left: 0.35rem;
+  color: #7dd3fc;
+  font-weight: 500;
 }
 
 .btn-load--download:hover:not(:disabled) {
