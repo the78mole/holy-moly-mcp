@@ -3,6 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import mermaid from 'mermaid'
+import LoginView from './LoginView.vue'
+import { auth, apiFetch, sseStream, logout, hasRole, initAuth } from './auth.js'
 
 // ── Configure marked: syntax highlighting + mermaid blocks ─────────────────
 marked.use({
@@ -81,14 +83,14 @@ const uiText = {
   unknownError: 'Unbekannter Fehler',
 }
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || ''
+// The API base URL lives in auth.js; every API call goes through apiFetch (bearer token attached).
 
 const isPdf = computed(() => file.value?.name?.toLowerCase().endsWith('.pdf') ?? false)
 
 const endpoint = computed(() =>
   isPdf.value
-    ? `${apiBaseUrl}/api/v1/convert/pdf-to-markdown`
-    : `${apiBaseUrl}/api/v1/convert/speech-to-text`,
+    ? `/api/v1/convert/pdf-to-markdown`
+    : `/api/v1/convert/speech-to-text`,
 )
 
 const dropLabel = computed(() =>
@@ -144,7 +146,7 @@ function qualityClass(quality) {
 
 async function fetchModelInfo() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/model/info`)
+    const res = await apiFetch(`/api/v1/model/info`)
     if (!res.ok) return
     const data = await res.json()
     availableModels.value = data.models ?? []
@@ -157,7 +159,7 @@ async function fetchModelInfo() {
 
 async function fetchSystemInfo() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/system/info`)
+    const res = await apiFetch(`/api/v1/system/info`)
     if (!res.ok) return
     systemInfo.value = await res.json()
   } catch (_) {}
@@ -165,7 +167,7 @@ async function fetchSystemInfo() {
 
 async function applyModelSelection() {
   if (!selectedModel.value || selectedModel.value === activeModel.value) return
-  await fetch(`${apiBaseUrl}/api/v1/model/load`, {
+  await apiFetch(`/api/v1/model/load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: selectedModel.value }),
@@ -180,31 +182,45 @@ async function applyModelSelection() {
 
 function connectModelStatus() {
   if (eventSource) return
-  eventSource = new EventSource(`${apiBaseUrl}/api/v1/model/status`)
-  eventSource.onmessage = (event) => {
+  // fetch-based SSE: EventSource cannot send the Authorization header
+  eventSource = sseStream('/api/v1/model/status', (raw) => {
     try {
-      const data = JSON.parse(event.data)
+      const data = JSON.parse(raw)
       modelPhase.value = data.phase
       modelProgress.value = data.progress ?? 0
       modelMessage.value = data.message ?? ''
       if (data.model) activeModel.value = data.model
       if (data.phase === 'ready' || data.phase === 'error') {
-        eventSource.close()
+        eventSource?.close()
         eventSource = null
         fetchModelInfo()   // refresh cached-status after load completes
       }
     } catch (_) {}
-  }
-  eventSource.onerror = () => {
-    if (modelPhase.value !== 'ready') {
-      eventSource?.close()
-      eventSource = null
-      setTimeout(connectModelStatus, 2000)
-    }
-  }
+  }, () => {
+    eventSource = null
+    if (modelPhase.value !== 'ready' && appReady.value) setTimeout(connectModelStatus, 2000)
+  })
 }
 
-onMounted(() => { fetchModelInfo(); fetchSystemInfo(); connectModelStatus(); fetchTtsVoices(); fetchTtsModelInfo(); connectTtsModelStatus() })
+const isAdmin = computed(() => hasRole('holy-moly-admin'))
+const appReady = computed(() => auth.status === 'authenticated' || auth.status === 'disabled')
+
+function loadAll() {
+  fetchModelInfo()
+  if (isAdmin.value) fetchSystemInfo()   // admin-only endpoint; users would get 403
+  connectModelStatus()
+  fetchTtsVoices()
+  fetchTtsModelInfo()
+  connectTtsModelStatus()
+}
+
+function stopStreams() {
+  eventSource?.close(); eventSource = null
+  ttsEventSource?.close(); ttsEventSource = null
+}
+
+onMounted(() => { initAuth() })
+watch(appReady, (ready) => { if (ready) loadAll(); else stopStreams() })
 onUnmounted(() => {
   eventSource?.close()
   ttsEventSource?.close()
@@ -242,7 +258,7 @@ async function convert() {
       if (language.value) params.set('language', language.value)
       requestUrl = `${endpoint.value}?${params.toString()}`
     }
-    const response = await fetch(requestUrl, { method: 'POST', body: formData })
+    const response = await apiFetch(requestUrl, { method: 'POST', body: formData })
     const data = await response.json()
     if (!response.ok) throw new Error(data.detail || uiText.genericError)
     output.value = data.result || ''
@@ -403,7 +419,7 @@ async function convertPdf() {
     let res
     if (pdfInputMode.value === 'url') {
       if (!pdfUrl.value.trim()) { pdfError.value = 'Bitte eine URL eingeben.'; return }
-      res = await fetch(`${apiBaseUrl}/api/v1/convert/pdf-from-url`, {
+      res = await apiFetch(`/api/v1/convert/pdf-from-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -420,7 +436,7 @@ async function convertPdf() {
       if (pdfTimeout.value > 0) params.set('timeout', String(pdfTimeout.value))
       if (pdfWorkers.value > 0) params.set('workers', String(pdfWorkers.value))
       const qs = params.toString() ? '?' + params.toString() : ''
-      res = await fetch(`${apiBaseUrl}/api/v1/convert/pdf-to-markdown${qs}`, { method: 'POST', body: fd })
+      res = await apiFetch(`/api/v1/convert/pdf-to-markdown${qs}`, { method: 'POST', body: fd })
     }
     const data = await res.json()
     if (!res.ok) throw new Error(data.detail || 'Konvertierung fehlgeschlagen.')
@@ -549,7 +565,7 @@ async function generateMdPdf() {
 <html lang="de"><head><meta charset="UTF-8">
 <style>@page{margin:2cm;size:A4}${_PDF_BODY_CSS}</style>
 </head><body>${bodyHtml}</body></html>`
-    const res = await fetch(`${apiBaseUrl}/api/v1/convert/markdown-to-pdf`, {
+    const res = await apiFetch(`/api/v1/convert/markdown-to-pdf`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ html }),
@@ -599,7 +615,7 @@ const selectedTtsModelMeta = computed(() =>
 
 async function fetchTtsModelInfo() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/tts/model/info`)
+    const res = await apiFetch(`/api/v1/tts/model/info`)
     if (!res.ok) return
     const data = await res.json()
     availableTtsModels.value = data.models ?? []
@@ -610,7 +626,7 @@ async function fetchTtsModelInfo() {
 
 async function applyTtsModelSelection() {
   if (!selectedTtsModel.value || selectedTtsModel.value === activeTtsModel.value) return
-  await fetch(`${apiBaseUrl}/api/v1/tts/model/load`, {
+  await apiFetch(`/api/v1/tts/model/load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: selectedTtsModel.value }),
@@ -622,26 +638,22 @@ async function applyTtsModelSelection() {
 
 function connectTtsModelStatus() {
   if (ttsEventSource) return
-  ttsEventSource = new EventSource(`${apiBaseUrl}/api/v1/tts/model/status`)
-  ttsEventSource.onmessage = (event) => {
+  ttsEventSource = sseStream('/api/v1/tts/model/status', (raw) => {
     try {
-      const data = JSON.parse(event.data)
+      const data = JSON.parse(raw)
       ttsModelPhase.value = data.phase
       ttsModelProgress.value = data.progress ?? 0
       ttsModelMessage.value = data.message ?? ''
       if (data.model) activeTtsModel.value = data.model
       if (data.phase === 'ready' || data.phase === 'error') {
-        ttsEventSource.close(); ttsEventSource = null
+        ttsEventSource?.close(); ttsEventSource = null
         fetchTtsModelInfo()
       }
     } catch (_) {}
-  }
-  ttsEventSource.onerror = () => {
-    if (ttsModelPhase.value !== 'ready') {
-      ttsEventSource?.close(); ttsEventSource = null
-      setTimeout(connectTtsModelStatus, 2000)
-    }
-  }
+  }, () => {
+    ttsEventSource = null
+    if (ttsModelPhase.value !== 'ready' && appReady.value) setTimeout(connectTtsModelStatus, 2000)
+  })
 }
 
 // ── TTS state ─────────────────────────────────────────────────────────────
@@ -674,7 +686,7 @@ const ttsVoicesByLang = computed(() => {
 
 async function fetchTtsVoices() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/convert/text-to-speech/models`)
+    const res = await apiFetch(`/api/v1/convert/text-to-speech/models`)
     if (!res.ok) return
     const data = await res.json()
     ttsVoices.value = data.voices ?? []
@@ -684,19 +696,29 @@ async function fetchTtsVoices() {
   } catch (_) {}
 }
 
-function startTts() {
+async function startTts() {
   if (!ttsText.value.trim() || !selectedVoice.value) return
   const taskId = crypto.randomUUID()
   ttsTaskId.value = taskId
   ttsError.value = ''
   ttsState.value = 'loading'
+  if (audioSrc.value) { URL.revokeObjectURL(audioSrc.value); audioSrc.value = '' }
   const params = new URLSearchParams({
     text: ttsText.value,
     voice_id: selectedVoice.value,
     task_id: taskId,
   })
-  // Set src synchronously so browser play() stays within the user-gesture context
-  audioSrc.value = `${apiBaseUrl}/api/v1/convert/text-to-speech/stream?${params.toString()}`
+  try {
+    // The <audio> element cannot send an Authorization header, so the WAV stream is fetched
+    // here and handed to the player as a blob URL once complete (texts are <= 2000 chars).
+    const res = await apiFetch(`/api/v1/convert/text-to-speech/stream?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    audioSrc.value = URL.createObjectURL(blob)
+  } catch (_) {
+    ttsState.value = 'error'
+    ttsError.value = 'Audio-Streaming fehlgeschlagen. Bitte erneut versuchen.'
+  }
 }
 
 watch(audioSrc, async (src) => {
@@ -717,8 +739,8 @@ function onTtsError()  {
 
 async function downloadOgg() {
   try {
-    const url = `${apiBaseUrl}/api/v1/convert/text-to-speech/download/${ttsTaskId.value}`
-    const res = await fetch(url)
+    const url = `/api/v1/convert/text-to-speech/download/${ttsTaskId.value}`
+    const res = await apiFetch(url)
     if (!res.ok) {
       ttsError.value = 'OGG-Datei noch nicht bereit—bitte kurz warten.'
       return
@@ -738,7 +760,9 @@ async function downloadOgg() {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div v-if="auth.status === 'loading'" class="auth-loading">Anmeldung wird geprüft …</div>
+  <LoginView v-else-if="!appReady" />
+  <div v-else class="app-layout">
     <!-- ─────────────────────────── Sidebar ──────────────────────────────── -->
     <nav class="sidebar">
       <div class="sidebar__brand">⚡ Holy Moly</div>
@@ -779,6 +803,16 @@ async function downloadOgg() {
         <a class="nav-item" href="/docs" target="_blank" rel="noopener">
           <span class="nav-item__icon">📚</span> API Docs
         </a>
+      </div>
+      <div v-if="auth.user" class="sidebar__user">
+        <div class="sidebar__user-name" :title="auth.user.roles.join(', ')">
+          <span class="nav-item__icon">👤</span>
+          <span class="sidebar__user-text">{{ auth.user.name }}</span>
+          <span v-if="isAdmin" class="sidebar__badge">admin</span>
+        </div>
+        <button v-if="auth.status === 'authenticated'" class="nav-item" @click="logout">
+          <span class="nav-item__icon">⎋</span> Abmelden
+        </button>
       </div>
     </nav>
 
@@ -830,7 +864,8 @@ async function downloadOgg() {
                   v-if="selectedModel && selectedModel !== activeModel"
                   class="btn-load"
                   :class="{ 'btn-load--download': !selectedModelMeta?.cached }"
-                  :disabled="modelLoading"
+                  :disabled="modelLoading || !isAdmin"
+                  :title="isAdmin ? '' : 'Nur Administratoren können das Modell wechseln'"
                   @click="applyModelSelection"
                 >
                   <span v-if="modelLoading" class="spinner" />
@@ -1004,7 +1039,8 @@ async function downloadOgg() {
                 <button v-if="selectedTtsModel && selectedTtsModel !== activeTtsModel"
                   class="btn-load"
                   :class="{ 'btn-load--download': !selectedTtsModelMeta?.cached }"
-                  :disabled="ttsModelLoading"
+                  :disabled="ttsModelLoading || !isAdmin"
+                  :title="isAdmin ? '' : 'Nur Administratoren können das Modell wechseln'"
                   @click="applyTtsModelSelection">
                   <span v-if="ttsModelLoading" class="spinner" />
                   {{ selectedTtsModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
@@ -2488,5 +2524,53 @@ pre {
   color: #a5b4fc;
   background: #1e1b4b;
   font-weight: 600;
+}
+
+/* ── Auth ───────────────────────────────────────────────────────────────── */
+.auth-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5c6080;
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 0.9rem;
+  background: #09091a;
+}
+
+.sidebar__user {
+  margin-top: auto;
+  padding: 0.75rem 0.5rem 0;
+  border-top: 1px solid #181b35;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.sidebar__user-name {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.82rem;
+  color: #8b8fb0;
+  min-width: 0;
+}
+
+.sidebar__user-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__badge {
+  margin-left: auto;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: #171a36;
+  color: #a5b4fc;
 }
 </style>
