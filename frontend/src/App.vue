@@ -925,7 +925,7 @@ async function downloadOgg() {
                   <strong>Was der Benchmark tut</strong>
                   <p>Misst, wie schnell dieser Server transkribiert. Jedes bereits heruntergeladene Whisper-Modell
                     transkribiert ein 15-Sekunden-Sprachsample zweimal, der schnellere Durchlauf zählt.</p>
-                  <p>Ergebnis: <em>Sekunden je Minute Audio</em>, angezeigt in der Modellkarte und an den Modell-Chips,
+                  <p>Ergebnis: <em>Sekunden je Minute Audio</em>, angezeigt in den Modelldetails unter „Tempo“,
                     gespeichert je Modell, Gerät und Rechentyp.</p>
                   <p>Dauer: Sekunden bei kleinen, mehrere Minuten bei großen Modellen auf CPU. Laufende Transkriptionen
                     werden nicht unterbrochen; nicht aktive Modelle werden vorübergehend zusätzlich geladen.</p>
