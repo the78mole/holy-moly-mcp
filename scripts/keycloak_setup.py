@@ -6,8 +6,10 @@ Standard library only, so it runs anywhere with Python 3.10+.
 
 Environment:
     KC_URL              Keycloak base URL, e.g. https://keycloak.example.com
-    KC_ADMIN_USER       admin user in the master realm           (or KC_ADMIN_TOKEN)
-    KC_ADMIN_PASSWORD   its password                             (or KC_ADMIN_TOKEN)
+    KC_ADMIN_USER       admin user in the master realm           (or KC_ADMIN_TOKEN / client credentials)
+    KC_ADMIN_PASSWORD   its password
+    KC_ADMIN_CLIENT_ID  alternatively an admin service account in the master realm
+    KC_ADMIN_CLIENT_SECRET  its secret                           (kc.sh bootstrap-admin service)
     KC_ADMIN_TOKEN      alternatively a ready admin access token
     KC_TEMP_PASSWORD_FILE  with --create-user: write the temporary password to this file (mode 600) instead of stdout
     KC_REALM            realm to create/update            (default: holy-moly)
@@ -93,14 +95,20 @@ class Keycloak:
 def admin_token(base_url: str) -> str:
     if os.environ.get("KC_ADMIN_TOKEN"):
         return os.environ["KC_ADMIN_TOKEN"]
-    form = urllib.parse.urlencode(
-        {
+    if os.environ.get("KC_ADMIN_CLIENT_ID"):
+        grant = {
+            "grant_type": "client_credentials",
+            "client_id": env("KC_ADMIN_CLIENT_ID"),
+            "client_secret": env("KC_ADMIN_CLIENT_SECRET"),
+        }
+    else:
+        grant = {
             "grant_type": "password",
             "client_id": "admin-cli",
             "username": env("KC_ADMIN_USER"),
             "password": env("KC_ADMIN_PASSWORD"),
         }
-    ).encode()
+    form = urllib.parse.urlencode(grant).encode()
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}/realms/master/protocol/openid-connect/token", data=form, method="POST"
     )
