@@ -166,8 +166,9 @@ Keycloak realm, so OAuth-capable clients can log in interactively. The stdio ser
 
 `holy-moly-web` refuses to start unless at least one credential source is configured (or
 `HOLY_MOLY_AUTH_DISABLED=true` is set for local development). All `/api/v1/*` routes require a
-bearer token with the `holy-moly-user` role; model switching and `/api/v1/system/info` require
-`holy-moly-admin`. The web UI, `/docs` and `/api/v1/auth/*` stay public.
+bearer token with the `holy-moly-user` role; switching, deleting and benchmarking models and
+`/api/v1/system/info` require `holy-moly-admin`. The web UI, `/docs`, `/api/v1/auth/config` and
+`/api/v1/auth/login` stay public.
 
 | Source | Env vars | Notes |
 |---|---|---|
@@ -176,8 +177,9 @@ bearer token with the `holy-moly-user` role; model switching and `/api/v1/system
 | Static API tokens (bootstrap, no web login) | `HOLY_MOLY_API_TOKENS` | `<sha256hex>:<name>:<role[,role]>` entries, semicolon-separated; only hashes on the server |
 | Keycloak OIDC | `HOLY_MOLY_OIDC_REALM_URL`, `HOLY_MOLY_PUBLIC_URL`, `HOLY_MOLY_OIDC_AUDIENCE`, `HOLY_MOLY_OIDC_DCR` | RS256 tokens validated via the realm's JWKS; realm roles under `realm_access.roles` |
 
-Design, Keycloak setup, frontend integration and the remaining steps are described in
-[`docs/auth-oidc-and-tokens.md`](docs/auth-oidc-and-tokens.md).
+Decisions, Keycloak setup, module map, operations and verification are described in
+[`docs/auth-oidc-and-tokens.md`](docs/auth-oidc-and-tokens.md); the MCP endpoint in
+[`docs/http-transport.md`](docs/http-transport.md).
 
 ## API endpoints
 

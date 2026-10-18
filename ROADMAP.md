@@ -10,9 +10,8 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
       oder API-Feld, gleiche Option im MCP-Tool. Erster Satz: `default`, `report` (Deckblatt,
       Inhaltsverzeichnis, Seitenzahlen), `letter` (DIN 5008), `minutes`, `plain`.
       Mermaid bleibt im Browser gerendert, das Backend bettet fertiges HTML nur ein.
-- [ ] **Betrieb der Auth-Schicht abschließen** (Phase 6) – API-Token und lokales Admin-Konto von der
-      Credentials-Datei auf dem Host nach OpenBao/KeePass, Dev-Origins aus der CORS-Liste, Test-Container
-      `holy-moly-authtest` auf dockerapps entfernen.
+- [ ] **CORS-Dev-Origins** – `localhost:5173` aus der CORS-Liste nehmen oder per Env steuern. Zugangsdaten liegen
+      seit 2026-10-18 in OpenBao (`it-infra`, `secret/holy-moly-mcp`), der Test-Container ist entfernt.
 
 ## Angedacht
 
