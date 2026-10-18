@@ -233,7 +233,7 @@ async def convert_text_to_speech(text: str, voice_id: str, model: Optional[str] 
         model: Kokoro TTS model (e.g. ``kokoro-v1.0-fp16``); ignored for Piper (German) voices.
     """
     try:
-        task_id = uuid.uuid4().hex
+        task_id = str(uuid.uuid4())  # tts_local.validate_task_id expects the hyphenated form
         backend = await tts_local.prepare_tts(text, voice_id, task_id, model=model or None)
         chunks = [chunk async for chunk in tts_local.stream_tts(text, voice_id, task_id, backend)]
         return Audio(data=_finish_wav(chunks), format="wav")
