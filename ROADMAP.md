@@ -13,9 +13,9 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 - [ ] **Keycloak: AD-Anmeldung** – Entscheidung offen: Clients in den Realm `chaintronics` umziehen,
       Identity Brokering, oder LDAP-Federation direkt im Realm `holy-moly`. Für den Umzug muss
       `scripts/keycloak_setup.py` bestehende Realm-Einstellungen unangetastet lassen.
-- [ ] **Betrieb der Auth-Schicht abschließen** (Phase 6) – API-Token und lokales Admin-Konto von der
-      Credentials-Datei auf dem Host nach OpenBao/KeePass, Dev-Origins aus der CORS-Liste, Test-Container
-      `holy-moly-authtest` auf dockerapps entfernen.
+- [ ] **Betrieb der Auth-Schicht abschließen** (Phase 6) – Dev-Origins aus der CORS-Liste nehmen oder per Env
+      steuern. Zugangsdaten liegen seit 2026-10-18 in OpenBao (`it-infra`, `secret/holy-moly-mcp`), der
+      Test-Container ist entfernt.
 
 ## Angedacht
 

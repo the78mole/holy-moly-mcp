@@ -29,7 +29,7 @@ stammen aus der Keycloak-Dokumentation und sind beim Einrichten des Realms gegen
 | 4 | erledigt | `mcp_http.mount_mcp()` hängt `create_server(http=True).http_app()` unter `/mcp-server` in die FastAPI-App, Lifespans verkettet, RFC-9728-Route an der Wurzel; `resource_base_url` zeigt auf `/mcp-server`, damit Metadata und `WWW-Authenticate` den Endpunkt nennen. Tests in `test_mcp_http.py` und `test_mcp_server_auth.py` |
 | 7 | erledigt | Persönliche API-Tokens: `token_store.py` (SQLite im Volume `holy-moly-data`, nur SHA-256-Hashes), `api_tokens.py` (`/api/v1/auth/tokens`), `PersonalTokenVerifier` im `MultiAuth`, Panel „API-Tokens“ in der Web-UI. Tests in `test_api_tokens.py` |
 | 5 | erledigt | `remote/`-Proxy sendet `HOLY_MOLY_API_TOKEN` nur an die API; `.vscode/mcp.json` hat den Passwort-Input; READMEs ergänzt |
-| 6 | teilweise | Nginx Proxy Manager + TLS für holy-moly.intern.chaintronics.com stehen; Keycloak-Admin-Zugang in OpenBao (`it-infra`, `secret/keycloak-master-admin`); offen: OpenBao-Einträge für API-Token/lokales Konto, CORS-Dev-Origins |
+| 6 | fast erledigt | Nginx Proxy Manager + TLS für holy-moly.intern.chaintronics.com stehen; Keycloak-Admin-Zugang in OpenBao (`it-infra`, `secret/keycloak-master-admin`); lokales Admin-Konto, statisches API-Token und `HOLY_MOLY_LOCAL_JWT_SECRET` in OpenBao (`it-infra`, `secret/holy-moly-mcp`, seit 2026-10-18); offen: CORS-Dev-Origins |
 
 Abweichung vom Entwurf unten: die Tool-Checks hängen nicht als Dekorator an den Tools, sondern
 werden in `create_server(http=True)` gesetzt. Grund: FastMCP blendet Tools mit `auth`-Check
