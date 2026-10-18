@@ -939,31 +939,34 @@ async function downloadOgg() {
 
               <!-- Modell-Infokarte -->
               <div v-if="selectedModelMeta" class="model-card">
-                <div class="model-card__row">
-                  <span class="model-card__chip">{{ selectedModelMeta.params }} Params</span>
-                  <span class="model-card__chip">{{ formatSize(selectedModelMeta.size_int8_mb) }}</span>
-                  <span class="model-card__chip">{{ deviceInfo.compute_type }}</span>
+                <div class="model-card__head">
+                  <span class="model-card__name">{{ selectedModelMeta.name }}</span>
+                  <span v-if="selectedModelMeta.name === activeModel" class="model-card__state model-card__state--active">aktiv</span>
+                  <span v-else-if="selectedModelMeta.cached" class="model-card__state model-card__state--cached">im Cache · {{ formatSize(selectedModelMeta.size_on_disk_mb) }}</span>
+                  <span v-else class="model-card__state">nicht heruntergeladen</span>
                 </div>
-                <div class="model-card__row">
-                  <span class="model-card__label">Qualität</span>
-                  <span class="badge" :class="qualityClass(selectedModelMeta.quality)">
-                    {{ selectedModelMeta.quality }}&nbsp;(WER&nbsp;~{{ selectedModelMeta.wer_pct }}%)
-                  </span>
-                  <span class="model-card__sep">·</span>
-                  <span class="model-card__label">Geschwindigkeit</span>
-                  <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
-                </div>
-                <div v-if="systemInfo" class="model-card__row model-card__hw">
-                  <span>{{ systemInfo.cpu_count }}× {{ systemInfo.cpu_model }}</span>
-                  <template v-if="systemInfo.gpus && systemInfo.gpus.length > 0">
-                    <span class="model-card__sep">·</span>
-                    <span v-for="gpu in systemInfo.gpus" :key="gpu.index">
-                      {{ gpu.name }} ({{ formatSize(gpu.memory_mb) }})
-                    </span>
+                <dl class="model-card__grid">
+                  <dt>Parameter</dt>
+                  <dd>{{ selectedModelMeta.params }}</dd>
+                  <dt>Größe</dt>
+                  <dd>{{ formatSize(selectedModelMeta.size_int8_mb) }} <span class="model-card__muted">(int8)</span></dd>
+                  <dt>Qualität</dt>
+                  <dd>
+                    <span class="badge" :class="qualityClass(selectedModelMeta.quality)">{{ selectedModelMeta.quality }}</span>
+                    <span class="model-card__muted">WER ~{{ selectedModelMeta.wer_pct }} %</span>
+                  </dd>
+                  <dt>Tempo</dt>
+                  <dd>
+                    <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
+                    <span class="model-card__muted">auf {{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
+                  </dd>
+                  <template v-if="systemInfo">
+                    <dt>Hardware</dt>
+                    <dd class="model-card__hw" :title="systemInfo.cpu_model">
+                      {{ systemInfo.cpu_count }}× {{ systemInfo.cpu_model }}<template v-if="systemInfo.gpus && systemInfo.gpus.length > 0"><span v-for="gpu in systemInfo.gpus" :key="gpu.index">, {{ gpu.name }} ({{ formatSize(gpu.memory_mb) }})</span></template>
+                    </dd>
                   </template>
-                  <span class="model-card__sep">·</span>
-                  <span class="model-card__active">{{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
-                </div>
+                </dl>
               </div>
               <div class="stt-options">
                 <div class="option-row">
@@ -1116,17 +1119,22 @@ async function downloadOgg() {
 
               <!-- TTS model info card -->
               <div v-if="selectedTtsModelMeta" class="model-card">
-                <div class="model-card__row">
-                  <span class="model-card__chip">{{ selectedTtsModelMeta.precision }}</span>
-                  <span class="model-card__chip">{{ formatSize(selectedTtsModelMeta.size_mb) }}</span>
+                <div class="model-card__head">
+                  <span class="model-card__name">{{ selectedTtsModelMeta.name }}</span>
+                  <span v-if="selectedTtsModelMeta.name === activeTtsModel" class="model-card__state model-card__state--active">aktiv</span>
+                  <span v-else-if="selectedTtsModelMeta.cached" class="model-card__state model-card__state--cached">im Cache · {{ formatSize(selectedTtsModelMeta.size_on_disk_mb) }}</span>
+                  <span v-else class="model-card__state">nicht heruntergeladen</span>
                 </div>
-                <div class="model-card__row">
-                  <span class="model-card__label">Qualität</span>
-                  <span class="badge" :class="qualityClass(selectedTtsModelMeta.quality)">{{ selectedTtsModelMeta.quality }}</span>
-                  <span class="model-card__sep">·</span>
-                  <span class="model-card__label">Geschwindigkeit</span>
-                  <span class="badge" :class="speedClass(selectedTtsModelMeta.speed)">{{ selectedTtsModelMeta.speed }}</span>
-                </div>
+                <dl class="model-card__grid">
+                  <dt>Präzision</dt>
+                  <dd>{{ selectedTtsModelMeta.precision }}</dd>
+                  <dt>Größe</dt>
+                  <dd>{{ formatSize(selectedTtsModelMeta.size_mb) }}</dd>
+                  <dt>Qualität</dt>
+                  <dd><span class="badge" :class="qualityClass(selectedTtsModelMeta.quality)">{{ selectedTtsModelMeta.quality }}</span></dd>
+                  <dt>Tempo</dt>
+                  <dd><span class="badge" :class="speedClass(selectedTtsModelMeta.speed)">{{ selectedTtsModelMeta.speed }}</span></dd>
+                </dl>
               </div>
 
               <!-- Voice selector -->
@@ -2505,44 +2513,73 @@ pre {
   background: #07091a;
   border: 1px solid #181b35;
   border-radius: 9px;
-  padding: 0.55rem 0.85rem;
+  padding: 0.6rem 0.85rem 0.65rem;
   margin-bottom: 0.9rem;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.45rem;
   font-size: 0.78rem;
 }
 
-.model-card__row {
+.model-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid #12142c;
+}
+
+.model-card__name {
+  font-weight: 600;
+  color: #c7cbe8;
+  font-size: 0.84rem;
+}
+
+.model-card__state {
+  margin-left: auto;
+  color: #454868;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.model-card__state--active { color: #a5b4fc; font-weight: 500; }
+.model-card__state--cached { color: #4ade80; }
+
+.model-card__grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.9rem;
+  row-gap: 0.3rem;
+  margin: 0;
+  align-items: center;
+}
+
+.model-card__grid dt {
+  color: #454868;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.model-card__grid dd {
+  margin: 0;
+  color: #b0b3d0;
   display: flex;
   align-items: center;
+  gap: 0.45rem;
   flex-wrap: wrap;
-  gap: 0.3rem;
+  min-width: 0;
 }
 
-.model-card__chip {
-  background: #0c0e22;
-  border: 1px solid #1e2244;
-  border-radius: 5px;
-  padding: 0.07rem 0.38rem;
-  color: #8a8eb0;
-  font-size: 0.75rem;
-}
-
-.model-card__label { color: #454868; }
-.model-card__sep   { color: #1e2244; user-select: none; }
+.model-card__muted { color: #5c6080; }
 
 .model-card__hw {
-  color: #3a3d58;
-  font-size: 0.73rem;
+  color: #6b6f90;
+  font-size: 0.74rem;
+  display: block !important;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.model-card__active {
-  color: #6a60b8;
-  font-weight: 500;
 }
 
 /* ── Badges ─────────────────────────────────────────────────────────────── */
