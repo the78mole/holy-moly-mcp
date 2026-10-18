@@ -3,12 +3,16 @@
 Unlike ``mcp_server.py`` (which loads faster-whisper/marker-pdf/WeasyPrint locally),
 this server does no heavy processing itself. It runs locally over stdio but forwards
 every tool call as an HTTP request to an already-running ``holy-moly-web`` instance,
-configured via the ``HOLY_MOLY_API_URL`` environment variable. Optional default models for
-requests that don't specify one explicitly can be set via ``HOLY_MOLY_DEFAULT_WHISPER_MODEL``
-and ``HOLY_MOLY_DEFAULT_TTS_MODEL``::
+configured via the ``HOLY_MOLY_API_URL`` environment variable. If the deployment requires
+authentication (see ``docs/auth-oidc-and-tokens.md``), set ``HOLY_MOLY_API_TOKEN`` to a static
+API token or a token obtained from ``POST /api/v1/auth/login``; it is sent as a bearer header
+on every request to the API (and only there, never to third-party download URLs). Optional
+default models for requests that don't specify one explicitly can be set via
+``HOLY_MOLY_DEFAULT_WHISPER_MODEL`` and ``HOLY_MOLY_DEFAULT_TTS_MODEL``::
 
     "env": {
         "HOLY_MOLY_API_URL": "http://172.22.7.224:8087",
+        "HOLY_MOLY_API_TOKEN": "hm_...",
         "HOLY_MOLY_DEFAULT_WHISPER_MODEL": "small",
         "HOLY_MOLY_DEFAULT_TTS_MODEL": "kokoro-v1.0-int8"
     }
@@ -33,6 +37,17 @@ mcp = FastMCP("Holy-Moly-Converter (remote)")
 
 def _api_base() -> str:
     return os.environ.get("HOLY_MOLY_API_URL", DEFAULT_API_URL).rstrip("/")
+
+
+def _api_headers() -> dict[str, str]:
+    """Bearer header for the holy-moly-web API, if a token is configured."""
+    token = os.environ.get("HOLY_MOLY_API_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _api_client() -> httpx.AsyncClient:
+    """HTTP client for the holy-moly-web API. Never use it for third-party URLs."""
+    return httpx.AsyncClient(timeout=REQUEST_TIMEOUT, headers=_api_headers())
 
 
 @mcp.tool()
@@ -65,18 +80,20 @@ async def convert_speech_to_text(
         if effective_model:
             params["model"] = effective_model
 
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            if url:
-                download = await client.get(url, follow_redirects=True)
+        if url:
+            # Plain client on purpose: the API token must not leak to the audio host.
+            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as download_client:
+                download = await download_client.get(url, follow_redirects=True)
                 download.raise_for_status()
-                filename = Path(url).name or "download.audio"
-                files = {"file": (filename, download.content)}
-            else:
-                path = Path(file_path)
-                if not path.is_file():
-                    return f"Speech-to-text conversion failed: file not found: {file_path}"
-                files = {"file": (path.name, path.read_bytes())}
+            filename = Path(url).name or "download.audio"
+            files = {"file": (filename, download.content)}
+        else:
+            path = Path(file_path)
+            if not path.is_file():
+                return f"Speech-to-text conversion failed: file not found: {file_path}"
+            files = {"file": (path.name, path.read_bytes())}
 
+        async with _api_client() as client:
             response = await client.post(
                 f"{_api_base()}/api/v1/convert/speech-to-text",
                 params=params,
@@ -110,7 +127,7 @@ async def convert_pdf_to_markdown(
         return "Input validation failed: provide exactly one of `file_path` or `url`."
 
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        async with _api_client() as client:
             if url:
                 response = await client.post(
                     f"{_api_base()}/api/v1/convert/pdf-from-url",
@@ -144,7 +161,7 @@ async def convert_html_to_pdf(html: str, output_path: str) -> str:
         output_path: Absolute local path where the resulting PDF should be written.
     """
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        async with _api_client() as client:
             response = await client.post(
                 f"{_api_base()}/api/v1/convert/markdown-to-pdf",
                 json={"html": html},
@@ -163,7 +180,7 @@ async def convert_html_to_pdf(html: str, output_path: str) -> str:
 async def list_tts_voices() -> str:
     """List available text-to-speech voices on the remote holy-moly-web API."""
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        async with _api_client() as client:
             response = await client.get(f"{_api_base()}/api/v1/convert/text-to-speech/models")
             response.raise_for_status()
             voices = response.json()["voices"]
@@ -198,7 +215,7 @@ async def convert_text_to_speech(
         effective_model = model or os.environ.get("HOLY_MOLY_DEFAULT_TTS_MODEL")
         if effective_model:
             params["model"] = effective_model
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        async with _api_client() as client:
             async with client.stream(
                 "GET",
                 f"{_api_base()}/api/v1/convert/text-to-speech/stream",

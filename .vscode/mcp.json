@@ -7,6 +7,12 @@
       "default": "http://172.22.7.224:8087"
     },
     {
+      "type": "promptString",
+      "id": "holy-moly-api-token",
+      "password": true,
+      "description": "Bearer token for the remote holy-moly-web deployment (static API token or a token from POST /api/v1/auth/login; leave empty if the deployment has no auth)"
+    },
+    {
       "type": "pickString",
       "id": "holy-moly-whisper-model",
       "description": "faster-whisper model to load at startup (local in-process server)",
@@ -42,6 +48,7 @@
       "cwd": "${workspaceFolder}",
       "env": {
         "HOLY_MOLY_API_URL": "${input:holy-moly-api-url}",
+        "HOLY_MOLY_API_TOKEN": "${input:holy-moly-api-token}",
         "HOLY_MOLY_DEFAULT_WHISPER_MODEL": "${input:holy-moly-default-whisper-model}",
         "HOLY_MOLY_DEFAULT_TTS_MODEL": "${input:holy-moly-default-tts-model}"
       }

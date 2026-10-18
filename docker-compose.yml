@@ -11,5 +11,28 @@ services:
       - HF_HOME=/models
       - MARKER_TIMEOUT=600
       - MARKER_WORKERS=12
+      # --- Authentication (docs/auth-oidc-and-tokens.md). At least one source is required,
+      # --- or HOLY_MOLY_AUTH_DISABLED=true for local development only.
+      - HOLY_MOLY_PUBLIC_URL=${HOLY_MOLY_PUBLIC_URL:-}
+      - HOLY_MOLY_OIDC_REALM_URL=${HOLY_MOLY_OIDC_REALM_URL:-}
+      - HOLY_MOLY_OIDC_AUDIENCE=${HOLY_MOLY_OIDC_AUDIENCE:-holy-moly-api}
+      - HOLY_MOLY_API_TOKENS=${HOLY_MOLY_API_TOKENS:-}
+      - HOLY_MOLY_LOCAL_JWT_SECRET=${HOLY_MOLY_LOCAL_JWT_SECRET:-}
+      # Local accounts: either inline (escape every '$' of the argon2 hash as '$$') ...
+      - HOLY_MOLY_LOCAL_USERS=${HOLY_MOLY_LOCAL_USERS:-}
+      # ... or, preferred, from a file mounted as a secret (uncomment here and below):
+      # - HOLY_MOLY_LOCAL_USERS_FILE=/run/secrets/holy-moly-local-users
+      - HOLY_MOLY_AUTH_DISABLED=${HOLY_MOLY_AUTH_DISABLED:-}
     volumes:
       - ./whisper-models:/models
+      # marker-pdf model cache; without this volume ~3 GB are re-downloaded on every re-create
+      - marker-models:/root/.cache/datalab
+    # secrets:
+    #   - holy-moly-local-users
+
+# secrets:
+#   holy-moly-local-users:
+#     file: ./secrets/local-users.txt   # one 'name:<argon2-hash>:role[,role]' per line; not in git
+
+volumes:
+  marker-models:

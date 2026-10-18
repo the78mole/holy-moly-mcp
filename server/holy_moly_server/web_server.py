@@ -15,12 +15,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from holy_moly_server import local_accounts
+from holy_moly_server.auth import ensure_auth_configured, require_admin, require_user
 from holy_moly_server.services.converter import (
     MODEL_METADATA,
     get_active_model_name,
@@ -107,7 +109,8 @@ def _get_gpus() -> list[dict]:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):  # noqa: ARG001
-    """Trigger STT and TTS model loading at server startup."""
+    """Refuse to start without auth config, then trigger STT and TTS model loading."""
+    ensure_auth_configured()
     await start_model_loading()
     await start_tts_model_loading()
     yield
@@ -134,6 +137,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Public auth endpoints: /api/v1/auth/login (local accounts) and /api/v1/auth/config.
+app.include_router(local_accounts.router)
+
+# Every /api/v1 route below carries one of these. See docs/auth-oidc-and-tokens.md, section 5.3.
+AS_USER = {"dependencies": [Depends(require_user)]}
+AS_ADMIN = {"dependencies": [Depends(require_admin)]}
+
 
 # ---------------------------------------------------------------------------
 # Model status SSE
@@ -150,7 +160,7 @@ async def _model_status_generator():
         await asyncio.sleep(0.5)
 
 
-@app.get("/api/v1/model/status", tags=["Model"])
+@app.get("/api/v1/model/status", tags=["Model"], **AS_USER)
 async def model_status_stream():
     """Server-Sent Events stream of model loading progress."""
     return StreamingResponse(
@@ -163,7 +173,7 @@ async def model_status_stream():
     )
 
 
-@app.get("/api/v1/model/info", tags=["Model"])
+@app.get("/api/v1/model/info", tags=["Model"], **AS_USER)
 async def model_info():
     """Return the active model, device info, enriched model list, and available languages."""
     device = os.environ.get("HOLY_MOLY_DEVICE", "cpu")
@@ -185,7 +195,7 @@ async def model_info():
     }
 
 
-@app.post("/api/v1/model/load", tags=["Model"])
+@app.post("/api/v1/model/load", tags=["Model"], **AS_ADMIN)
 async def model_load(model: str = Body(..., embed=True)):
     """Switch the active Whisper model."""
     try:
@@ -195,7 +205,7 @@ async def model_load(model: str = Body(..., embed=True)):
     return {"status": "loading", "model": model}
 
 
-@app.get("/api/v1/system/info", tags=["System"])
+@app.get("/api/v1/system/info", tags=["System"], **AS_ADMIN)
 async def system_info():
     """Return hardware information available to the server process."""
     return {
@@ -210,7 +220,7 @@ async def system_info():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/v1/convert/speech-to-text", tags=["Conversion"])
+@app.post("/api/v1/convert/speech-to-text", tags=["Conversion"], **AS_USER)
 async def convert_speech_to_text_api(
     file: UploadFile = File(...),
     mode: str = Query(default="plain"),
@@ -240,7 +250,7 @@ async def convert_speech_to_text_api(
         raise HTTPException(status_code=500, detail=f"Conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/pdf-to-markdown", tags=["Conversion"])
+@app.post("/api/v1/convert/pdf-to-markdown", tags=["Conversion"], **AS_USER)
 async def convert_pdf_to_markdown_api(
     file: UploadFile = File(...),
     timeout: int = Query(default=0, ge=0, description="Subprocess timeout in seconds (0 = use server default)"),
@@ -263,7 +273,7 @@ async def convert_pdf_to_markdown_api(
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/pdf-from-url", tags=["Conversion"])
+@app.post("/api/v1/convert/pdf-from-url", tags=["Conversion"], **AS_USER)
 async def convert_pdf_from_url_api(payload: PdfFromUrlRequest) -> dict[str, str]:
     """Download a PDF from a URL and convert it to Markdown."""
     url = payload.url.strip()
@@ -283,7 +293,7 @@ async def convert_pdf_from_url_api(payload: PdfFromUrlRequest) -> dict[str, str]
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/markdown-to-pdf", tags=["Conversion"])
+@app.post("/api/v1/convert/markdown-to-pdf", tags=["Conversion"], **AS_USER)
 async def markdown_to_pdf_api(payload: MarkdownToPdfRequest) -> Response:
     """Convert a rendered HTML document (from Markdown) to PDF via WeasyPrint."""
     html = payload.html.strip()
@@ -306,13 +316,13 @@ async def markdown_to_pdf_api(payload: MarkdownToPdfRequest) -> Response:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/v1/convert/text-to-speech/models", tags=["Text-to-Speech"])
+@app.get("/api/v1/convert/text-to-speech/models", tags=["Text-to-Speech"], **AS_USER)
 async def tts_models():
     """Return the list of available Kokoro TTS voices."""
     return {"voices": get_tts_voices()}
 
 
-@app.get("/api/v1/convert/text-to-speech/stream", tags=["Text-to-Speech"])
+@app.get("/api/v1/convert/text-to-speech/stream", tags=["Text-to-Speech"], **AS_USER)
 async def tts_stream(
     text: str = Query(..., min_length=1, max_length=2000),
     voice_id: str = Query(...),
@@ -340,7 +350,7 @@ async def tts_stream(
     )
 
 
-@app.get("/api/v1/convert/text-to-speech/download/{task_id}", tags=["Text-to-Speech"])
+@app.get("/api/v1/convert/text-to-speech/download/{task_id}", tags=["Text-to-Speech"], **AS_USER)
 async def tts_download(task_id: str):
     """Return the saved OGG file for a completed TTS task."""
     try:
@@ -372,13 +382,13 @@ async def _tts_model_status_generator():
         await asyncio.sleep(0.3)
 
 
-@app.get("/api/v1/tts/model/info", tags=["Text-to-Speech"])
+@app.get("/api/v1/tts/model/info", tags=["Text-to-Speech"], **AS_USER)
 async def tts_model_info():
     """Return available TTS models and which one is active."""
     return get_tts_model_info()
 
 
-@app.get("/api/v1/tts/model/status", tags=["Text-to-Speech"])
+@app.get("/api/v1/tts/model/status", tags=["Text-to-Speech"], **AS_USER)
 async def tts_model_status():
     """SSE stream of TTS model loading progress."""
     return StreamingResponse(
@@ -388,7 +398,7 @@ async def tts_model_status():
     )
 
 
-@app.post("/api/v1/tts/model/load", tags=["Text-to-Speech"])
+@app.post("/api/v1/tts/model/load", tags=["Text-to-Speech"], **AS_ADMIN)
 async def tts_model_load(payload: TtsModelLoadRequest):
     """Switch to a different TTS model (downloads if needed)."""
     try:
