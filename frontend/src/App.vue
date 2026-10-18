@@ -993,8 +993,8 @@ async function downloadOgg() {
                       'model-chip--active': m.name === activeModel,
                       'model-chip--cached': m.cached && m.name !== activeModel,
                     }"
-                    :title="m.benchmark ? `≈ ${Math.round(m.benchmark.seconds_per_audio_minute)} s je Minute Audio` : m.path"
-                  >{{ m.name }}<span v-if="m.benchmark" class="model-chip__bench">{{ Math.round(m.benchmark.seconds_per_audio_minute) }} s/min</span></span>
+                    :title="m.path"
+                  >{{ m.name }}</span>
                 </div>
               </div>
 
@@ -2652,12 +2652,6 @@ pre {
 .bench-note--error { color: #f87171; }
 
 .model-card__measured { color: #7dd3fc; font-weight: 600; }
-
-.model-chip__bench {
-  margin-left: 0.35rem;
-  color: #7dd3fc;
-  font-weight: 500;
-}
 
 .btn-load--download:hover:not(:disabled) {
   background: #1c1207;
