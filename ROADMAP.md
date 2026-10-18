@@ -28,8 +28,6 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
       Konvertierungen, etwa mit `slowapi`.
 - [ ] **Audit-Log** – wer hat wann welches Tool mit welchem Modell genutzt; Identität kommt aus der
       Auth-Schicht.
-- [ ] **PDF → Markdown im lokalen MCP-Server** – `convert_pdf_to_markdown` in `mcp_server.py` ist noch
-      ein Platzhalter; der Remote-Proxy kann es bereits über die API.
 - [ ] **Token-Verwaltung für Admins in der UI** – alle Tokens sehen und widerrufen (API kann es bereits).
 - [ ] **Benutzerverwaltung lokaler Konten** – bisher nur per Datei; eine kleine Admin-Ansicht in der
       Web-UI zum Anlegen, Sperren und Rollen setzen.
@@ -40,6 +38,9 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 
 ## Erledigt
 
+- 2026-10-18 **MCP-Tools vollständig** – `mcp_server.py` bietet über HTTP und stdio dieselben fünf Tools wie der
+  Proxy (STT, PDF → Markdown, HTML → PDF, Stimmen, TTS); Datei-Eingabe per URL, Serverpfad oder Base64, PDF und
+  Audio kommen als MCP-Blobs zurück.
 - 2026-10-18 **Keycloak: Umzug in den Realm `chaintronics`** – Single Sign-On mit dem AD-Konto; Rollen werden je Nutzer
   vergeben (`scripts/keycloak_setup.py --grant-user`), eigener Realm `holy-moly` gelöscht.
 - 2026-10-18 **STT-Benchmark** – Admin-Knopf misst alle heruntergeladenen Whisper-Modelle mit einem

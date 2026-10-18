@@ -133,8 +133,8 @@ argument per call, which overrides the env-var default for just that one request
 
 ### `holy-moly` — local in-process server
 
-Runs `holy-moly-mcp` from the `server` member (speech-to-text, plus a PDF-to-Markdown
-placeholder), loading faster-whisper in-process. The heavy dependencies are installed on demand
+Runs `holy-moly-mcp` from the `server` member with the same five tools as the HTTP endpoint
+(speech-to-text, PDF-to-Markdown, HTML-to-PDF, TTS), loading faster-whisper in-process. The heavy dependencies are installed on demand
 the first time this server starts.
 
 | Env var | Default | Description |
@@ -161,6 +161,10 @@ claude mcp add --transport http holy-moly https://holy-moly.example/mcp-server/m
 VS Code: `"type": "http"`, `"url": ".../mcp-server/mcp"`, `"headers": {"Authorization": "Bearer ..."}`.
 Without a token, the endpoint answers 401 with RFC 9728 protected-resource metadata pointing at the
 Keycloak realm, so OAuth-capable clients can log in interactively. The stdio servers keep working unchanged.
+
+Tools: `convert_speech_to_text`, `convert_pdf_to_markdown`, `convert_html_to_pdf`, `list_tts_voices`,
+`convert_text_to_speech`. The server only sees its own file system, so file inputs are given as a `url`,
+a server-side `file_path`, or `content_base64` for small files; PDF and audio results come back as MCP blobs.
 
 ## Authentication
 

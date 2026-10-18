@@ -33,7 +33,8 @@ class McpServerAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_stdio_server_exposes_tools_without_auth(self) -> None:
         auth.configure(_config(token_spec=f"{auth.hash_api_token('x')}:ci:{auth.ROLE_USER}"))
         names = await self._tool_names(mcp_server.create_server(http=False))
-        self.assertEqual(names, {"convert_speech_to_text", "convert_pdf_to_markdown"})
+        self.assertEqual(names, {"convert_speech_to_text", "convert_pdf_to_markdown", "convert_html_to_pdf",
+                                 "list_tts_voices", "convert_text_to_speech"})
 
     async def test_http_server_hides_tools_from_unauthenticated_clients(self) -> None:
         auth.configure(_config(token_spec=f"{auth.hash_api_token('x')}:ci:{auth.ROLE_USER}"))
@@ -46,8 +47,31 @@ class McpServerAuthTests(unittest.IsolatedAsyncioTestCase):
         auth.configure(_config(disabled=True))
         server = mcp_server.create_server(http=True)
         self.assertIsNone(server.auth)
-        self.assertEqual(len(await self._tool_names(server)), 2)
+        self.assertEqual(len(await self._tool_names(server)), 5)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class McpToolHelperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_speech_requires_exactly_one_source(self) -> None:
+        self.assertIn("exactly one", await mcp_server.convert_speech_to_text())
+        self.assertIn("exactly one", await mcp_server.convert_speech_to_text(file_path="/a.wav", content_base64="AAAA"))
+
+    async def test_pdf_rejects_bad_inline_payload(self) -> None:
+        self.assertIn("exactly one", await mcp_server.convert_pdf_to_markdown())
+        self.assertIn("not valid base64", await mcp_server.convert_pdf_to_markdown(content_base64="%%%"))
+        self.assertIn("file not found", await mcp_server.convert_pdf_to_markdown(file_path="/does/not/exist.pdf"))
+
+    def test_finish_wav_patches_sizes(self) -> None:
+        import struct
+        header = struct.pack("<4sI4s", b"RIFF", 0xFFFFFFFF, b"WAVE") + struct.pack(
+            "<4sIHHIIHH", b"fmt ", 16, 1, 1, 16000, 32000, 2, 16) + struct.pack("<4sI", b"data", 0xFFFFFFFF)
+        wav = mcp_server._finish_wav([header, b"\x00" * 100])
+        self.assertEqual(struct.unpack_from("<I", wav, 4)[0], len(wav) - 8)
+        self.assertEqual(struct.unpack_from("<I", wav, 40)[0], 100)
+
+    async def test_voice_list_and_html_validation(self) -> None:
+        self.assertIn("de_thorsten", await mcp_server.list_tts_voices())
+        self.assertIn("empty", await mcp_server.convert_html_to_pdf("   "))

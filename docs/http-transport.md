@@ -50,6 +50,19 @@ claude mcp add --transport http holy-moly https://holy-moly.intern.chaintronics.
 Tokens come from the web UI ("API-Tokens" under the user name). Without a header, OAuth-capable
 clients receive a 401 with `resource_metadata` and can log in through Keycloak.
 
+## Tools
+
+| Tool | Input | Output |
+|---|---|---|
+| `convert_speech_to_text` | `url`, server `file_path` or `content_base64` + `filename`; `mode`, `language`, `model` | transcript text |
+| `convert_pdf_to_markdown` | `url`, server `file_path` or `content_base64`; `timeout`, `workers` | Markdown with embedded images |
+| `convert_html_to_pdf` | `html`, `filename` | PDF as an MCP file blob |
+| `list_tts_voices` | – | voice ids with name and language |
+| `convert_text_to_speech` | `text` (≤ 2000 chars), `voice_id`, `model` | WAV audio as an MCP audio blob |
+
+The server cannot read the client's disk, which is the one thing the stdio proxy still does better: it
+uploads local files. Inline `content_base64` is capped at 50 MB.
+
 ## Verification
 
 ```bash
