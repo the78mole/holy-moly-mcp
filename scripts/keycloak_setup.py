@@ -9,6 +9,7 @@ Environment:
     KC_ADMIN_USER       admin user in the master realm           (or KC_ADMIN_TOKEN)
     KC_ADMIN_PASSWORD   its password                             (or KC_ADMIN_TOKEN)
     KC_ADMIN_TOKEN      alternatively a ready admin access token
+    KC_TEMP_PASSWORD_FILE  with --create-user: write the temporary password to this file (mode 600) instead of stdout
     KC_REALM            realm to create/update            (default: holy-moly)
     HOLY_MOLY_PUBLIC_URL  public URL of holy-moly-web, used for redirect URIs and web origins
     HOLY_MOLY_DEV_ORIGIN  extra dev origin                 (default: http://localhost:5173)
@@ -243,8 +244,15 @@ def create_user(kc: Keycloak, realm: str, username: str) -> None:
             "requiredActions": ["UPDATE_PASSWORD"],
         },
     )
-    print(f"user {username}: created with a temporary password (must be changed at first login):")
-    print(f"  {temp_password}")
+    target = os.environ.get("KC_TEMP_PASSWORD_FILE")
+    if target:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{username}: {temp_password}\n")
+        print(f"user {username}: created; temporary password written to {target} (change at first login)")
+    else:
+        print(f"user {username}: created with a temporary password (must be changed at first login):")
+        print(f"  {temp_password}")
 
 
 def grant_admin(kc: Keycloak, realm: str, username: str) -> None:
