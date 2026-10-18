@@ -72,6 +72,13 @@ class McpToolHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(struct.unpack_from("<I", wav, 4)[0], len(wav) - 8)
         self.assertEqual(struct.unpack_from("<I", wav, 40)[0], 100)
 
+    def test_tts_task_id_format_is_accepted_by_the_service(self) -> None:
+        import uuid
+        from holy_moly_server.services import tts_local
+        tts_local.validate_task_id(str(uuid.uuid4()))      # the form mcp_server uses
+        with self.assertRaises(ValueError):
+            tts_local.validate_task_id(uuid.uuid4().hex)    # the form that broke the first deployment
+
     async def test_voice_list_and_html_validation(self) -> None:
         self.assertIn("de_thorsten", await mcp_server.list_tts_voices())
         self.assertIn("empty", await mcp_server.convert_html_to_pdf("   "))
