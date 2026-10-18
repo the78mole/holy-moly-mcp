@@ -3,6 +3,9 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import mermaid from 'mermaid'
+import LoginView from './LoginView.vue'
+import TokensPanel from './TokensPanel.vue'
+import { auth, apiFetch, sseStream, logout, hasRole, initAuth } from './auth.js'
 
 // ── Configure marked: syntax highlighting + mermaid blocks ─────────────────
 marked.use({
@@ -81,14 +84,14 @@ const uiText = {
   unknownError: 'Unbekannter Fehler',
 }
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || ''
+// The API base URL lives in auth.js; every API call goes through apiFetch (bearer token attached).
 
 const isPdf = computed(() => file.value?.name?.toLowerCase().endsWith('.pdf') ?? false)
 
 const endpoint = computed(() =>
   isPdf.value
-    ? `${apiBaseUrl}/api/v1/convert/pdf-to-markdown`
-    : `${apiBaseUrl}/api/v1/convert/speech-to-text`,
+    ? `/api/v1/convert/pdf-to-markdown`
+    : `/api/v1/convert/speech-to-text`,
 )
 
 const dropLabel = computed(() =>
@@ -144,7 +147,7 @@ function qualityClass(quality) {
 
 async function fetchModelInfo() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/model/info`)
+    const res = await apiFetch(`/api/v1/model/info`)
     if (!res.ok) return
     const data = await res.json()
     availableModels.value = data.models ?? []
@@ -157,7 +160,7 @@ async function fetchModelInfo() {
 
 async function fetchSystemInfo() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/system/info`)
+    const res = await apiFetch(`/api/v1/system/info`)
     if (!res.ok) return
     systemInfo.value = await res.json()
   } catch (_) {}
@@ -165,7 +168,7 @@ async function fetchSystemInfo() {
 
 async function applyModelSelection() {
   if (!selectedModel.value || selectedModel.value === activeModel.value) return
-  await fetch(`${apiBaseUrl}/api/v1/model/load`, {
+  await apiFetch(`/api/v1/model/load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: selectedModel.value }),
@@ -176,38 +179,120 @@ async function applyModelSelection() {
   connectModelStatus()
 }
 
+// ── STT benchmark (admin) ───────────────────────────────────────────────────
+
+const benchState = ref({ phase: 'idle', current: null, done: 0, total: 0, results: [], error: null })
+let benchStream = null
+
+const benchRunning = computed(() => benchState.value.phase === 'running')
+
+function connectBenchmarkStatus() {
+  benchStream?.close()
+  benchStream = sseStream('/api/v1/model/benchmark/status', (raw) => {
+    try {
+      benchState.value = JSON.parse(raw)
+      if (benchState.value.phase !== 'running') {
+        benchStream?.close(); benchStream = null
+        fetchModelInfo()   // pick up the new numbers
+      }
+    } catch (_) {}
+  }, () => { benchStream = null })
+}
+
+async function startBenchmark() {
+  const cached = availableModels.value.filter(m => m.cached).map(m => m.name)
+  if (!cached.length) return
+  if (!confirm(`Benchmark für ${cached.length} heruntergeladene Modelle starten (${cached.join(', ')})? Jedes Modell transkribiert ein 15-Sekunden-Sample zweimal; große Modelle brauchen auf CPU mehrere Minuten.`)) return
+  const res = await apiFetch('/api/v1/model/benchmark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) { alert(`Benchmark konnte nicht gestartet werden: ${data.detail || res.status}`); return }
+  benchState.value = { phase: 'running', current: null, done: 0, total: data.models.length, results: [], error: null }
+  connectBenchmarkStatus()
+}
+
+function formatBenchmark(b) {
+  if (!b) return null
+  const perMinute = Math.round(b.seconds_per_audio_minute)
+  const date = new Date(b.measured_at * 1000).toLocaleDateString('de-DE')
+  return { perMinute, rtf: b.realtime_factor, date }
+}
+
+// ── Model cache removal (admin) ─────────────────────────────────────────────
+
+const cacheBusy = ref(false)
+
+async function _deleteCache(path, label, refresh) {
+  if (!confirm(`${label} aus dem Cache löschen? Die Dateien müssen beim nächsten Aktivieren erneut heruntergeladen werden.`)) return
+  cacheBusy.value = true
+  try {
+    const res = await apiFetch(path, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    await refresh()
+  } catch (e) {
+    alert(`Löschen fehlgeschlagen: ${e.message}`)
+  } finally {
+    cacheBusy.value = false
+  }
+}
+
+function removeModelCache() {
+  if (!selectedModel.value) return
+  return _deleteCache(`/api/v1/model/cache/${encodeURIComponent(selectedModel.value)}`, `Whisper-Modell „${selectedModel.value}"`, fetchModelInfo)
+}
+
+function removeTtsModelCache() {
+  if (!selectedTtsModel.value) return
+  return _deleteCache(`/api/v1/tts/model/cache/${encodeURIComponent(selectedTtsModel.value)}`, `TTS-Modell „${selectedTtsModel.value}"`, fetchTtsModelInfo)
+}
+
 // ── SSE ─────────────────────────────────────────────────────────────────────
 
 function connectModelStatus() {
   if (eventSource) return
-  eventSource = new EventSource(`${apiBaseUrl}/api/v1/model/status`)
-  eventSource.onmessage = (event) => {
+  // fetch-based SSE: EventSource cannot send the Authorization header
+  eventSource = sseStream('/api/v1/model/status', (raw) => {
     try {
-      const data = JSON.parse(event.data)
+      const data = JSON.parse(raw)
       modelPhase.value = data.phase
       modelProgress.value = data.progress ?? 0
       modelMessage.value = data.message ?? ''
       if (data.model) activeModel.value = data.model
       if (data.phase === 'ready' || data.phase === 'error') {
-        eventSource.close()
+        eventSource?.close()
         eventSource = null
         fetchModelInfo()   // refresh cached-status after load completes
       }
     } catch (_) {}
-  }
-  eventSource.onerror = () => {
-    if (modelPhase.value !== 'ready') {
-      eventSource?.close()
-      eventSource = null
-      setTimeout(connectModelStatus, 2000)
-    }
-  }
+  }, () => {
+    eventSource = null
+    if (modelPhase.value !== 'ready' && appReady.value) setTimeout(connectModelStatus, 2000)
+  })
 }
 
-onMounted(() => { fetchModelInfo(); fetchSystemInfo(); connectModelStatus(); fetchTtsVoices(); fetchTtsModelInfo(); connectTtsModelStatus() })
+const isAdmin = computed(() => hasRole('holy-moly-admin'))
+const appReady = computed(() => auth.status === 'authenticated' || auth.status === 'disabled')
+
+function loadAll() {
+  fetchModelInfo()
+  if (isAdmin.value) fetchSystemInfo()   // admin-only endpoint; users would get 403
+  connectModelStatus()
+  fetchTtsVoices()
+  fetchTtsModelInfo()
+  connectTtsModelStatus()
+}
+
+function stopStreams() {
+  eventSource?.close(); eventSource = null
+  ttsEventSource?.close(); ttsEventSource = null
+}
+
+onMounted(() => { initAuth() })
+watch(appReady, (ready) => { if (ready) loadAll(); else stopStreams() })
 onUnmounted(() => {
   eventSource?.close()
   ttsEventSource?.close()
+  benchStream?.close()
   if (_recordingTimer) clearInterval(_recordingTimer)
   if (_mediaRecorder && isRecording.value) _mediaRecorder.stop()
   _stopLevelMeter()
@@ -242,7 +327,7 @@ async function convert() {
       if (language.value) params.set('language', language.value)
       requestUrl = `${endpoint.value}?${params.toString()}`
     }
-    const response = await fetch(requestUrl, { method: 'POST', body: formData })
+    const response = await apiFetch(requestUrl, { method: 'POST', body: formData })
     const data = await response.json()
     if (!response.ok) throw new Error(data.detail || uiText.genericError)
     output.value = data.result || ''
@@ -403,7 +488,7 @@ async function convertPdf() {
     let res
     if (pdfInputMode.value === 'url') {
       if (!pdfUrl.value.trim()) { pdfError.value = 'Bitte eine URL eingeben.'; return }
-      res = await fetch(`${apiBaseUrl}/api/v1/convert/pdf-from-url`, {
+      res = await apiFetch(`/api/v1/convert/pdf-from-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -420,7 +505,7 @@ async function convertPdf() {
       if (pdfTimeout.value > 0) params.set('timeout', String(pdfTimeout.value))
       if (pdfWorkers.value > 0) params.set('workers', String(pdfWorkers.value))
       const qs = params.toString() ? '?' + params.toString() : ''
-      res = await fetch(`${apiBaseUrl}/api/v1/convert/pdf-to-markdown${qs}`, { method: 'POST', body: fd })
+      res = await apiFetch(`/api/v1/convert/pdf-to-markdown${qs}`, { method: 'POST', body: fd })
     }
     const data = await res.json()
     if (!res.ok) throw new Error(data.detail || 'Konvertierung fehlgeschlagen.')
@@ -549,7 +634,7 @@ async function generateMdPdf() {
 <html lang="de"><head><meta charset="UTF-8">
 <style>@page{margin:2cm;size:A4}${_PDF_BODY_CSS}</style>
 </head><body>${bodyHtml}</body></html>`
-    const res = await fetch(`${apiBaseUrl}/api/v1/convert/markdown-to-pdf`, {
+    const res = await apiFetch(`/api/v1/convert/markdown-to-pdf`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ html }),
@@ -599,7 +684,7 @@ const selectedTtsModelMeta = computed(() =>
 
 async function fetchTtsModelInfo() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/tts/model/info`)
+    const res = await apiFetch(`/api/v1/tts/model/info`)
     if (!res.ok) return
     const data = await res.json()
     availableTtsModels.value = data.models ?? []
@@ -610,7 +695,7 @@ async function fetchTtsModelInfo() {
 
 async function applyTtsModelSelection() {
   if (!selectedTtsModel.value || selectedTtsModel.value === activeTtsModel.value) return
-  await fetch(`${apiBaseUrl}/api/v1/tts/model/load`, {
+  await apiFetch(`/api/v1/tts/model/load`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: selectedTtsModel.value }),
@@ -622,26 +707,22 @@ async function applyTtsModelSelection() {
 
 function connectTtsModelStatus() {
   if (ttsEventSource) return
-  ttsEventSource = new EventSource(`${apiBaseUrl}/api/v1/tts/model/status`)
-  ttsEventSource.onmessage = (event) => {
+  ttsEventSource = sseStream('/api/v1/tts/model/status', (raw) => {
     try {
-      const data = JSON.parse(event.data)
+      const data = JSON.parse(raw)
       ttsModelPhase.value = data.phase
       ttsModelProgress.value = data.progress ?? 0
       ttsModelMessage.value = data.message ?? ''
       if (data.model) activeTtsModel.value = data.model
       if (data.phase === 'ready' || data.phase === 'error') {
-        ttsEventSource.close(); ttsEventSource = null
+        ttsEventSource?.close(); ttsEventSource = null
         fetchTtsModelInfo()
       }
     } catch (_) {}
-  }
-  ttsEventSource.onerror = () => {
-    if (ttsModelPhase.value !== 'ready') {
-      ttsEventSource?.close(); ttsEventSource = null
-      setTimeout(connectTtsModelStatus, 2000)
-    }
-  }
+  }, () => {
+    ttsEventSource = null
+    if (ttsModelPhase.value !== 'ready' && appReady.value) setTimeout(connectTtsModelStatus, 2000)
+  })
 }
 
 // ── TTS state ─────────────────────────────────────────────────────────────
@@ -674,7 +755,7 @@ const ttsVoicesByLang = computed(() => {
 
 async function fetchTtsVoices() {
   try {
-    const res = await fetch(`${apiBaseUrl}/api/v1/convert/text-to-speech/models`)
+    const res = await apiFetch(`/api/v1/convert/text-to-speech/models`)
     if (!res.ok) return
     const data = await res.json()
     ttsVoices.value = data.voices ?? []
@@ -684,19 +765,29 @@ async function fetchTtsVoices() {
   } catch (_) {}
 }
 
-function startTts() {
+async function startTts() {
   if (!ttsText.value.trim() || !selectedVoice.value) return
   const taskId = crypto.randomUUID()
   ttsTaskId.value = taskId
   ttsError.value = ''
   ttsState.value = 'loading'
+  if (audioSrc.value) { URL.revokeObjectURL(audioSrc.value); audioSrc.value = '' }
   const params = new URLSearchParams({
     text: ttsText.value,
     voice_id: selectedVoice.value,
     task_id: taskId,
   })
-  // Set src synchronously so browser play() stays within the user-gesture context
-  audioSrc.value = `${apiBaseUrl}/api/v1/convert/text-to-speech/stream?${params.toString()}`
+  try {
+    // The <audio> element cannot send an Authorization header, so the WAV stream is fetched
+    // here and handed to the player as a blob URL once complete (texts are <= 2000 chars).
+    const res = await apiFetch(`/api/v1/convert/text-to-speech/stream?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    audioSrc.value = URL.createObjectURL(blob)
+  } catch (_) {
+    ttsState.value = 'error'
+    ttsError.value = 'Audio-Streaming fehlgeschlagen. Bitte erneut versuchen.'
+  }
 }
 
 watch(audioSrc, async (src) => {
@@ -717,8 +808,8 @@ function onTtsError()  {
 
 async function downloadOgg() {
   try {
-    const url = `${apiBaseUrl}/api/v1/convert/text-to-speech/download/${ttsTaskId.value}`
-    const res = await fetch(url)
+    const url = `/api/v1/convert/text-to-speech/download/${ttsTaskId.value}`
+    const res = await apiFetch(url)
     if (!res.ok) {
       ttsError.value = 'OGG-Datei noch nicht bereit—bitte kurz warten.'
       return
@@ -738,7 +829,9 @@ async function downloadOgg() {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div v-if="auth.status === 'loading'" class="auth-loading">Anmeldung wird geprüft …</div>
+  <LoginView v-else-if="!appReady" />
+  <div v-else class="app-layout">
     <!-- ─────────────────────────── Sidebar ──────────────────────────────── -->
     <nav class="sidebar">
       <div class="sidebar__brand">⚡ Holy Moly</div>
@@ -780,10 +873,33 @@ async function downloadOgg() {
           <span class="nav-item__icon">📚</span> API Docs
         </a>
       </div>
+      <div v-if="auth.user" class="sidebar__user">
+        <div class="sidebar__user-name" :title="auth.user.roles.join(', ')">
+          <span class="nav-item__icon">👤</span>
+          <span class="sidebar__user-text">{{ auth.user.name }}</span>
+          <span v-if="isAdmin" class="sidebar__badge">admin</span>
+        </div>
+        <button
+          v-if="auth.status === 'authenticated'"
+          class="nav-item"
+          :class="{ 'nav-item--active': activeSection === 'tokens' }"
+          @click="activeSection = 'tokens'"
+        >
+          <span class="nav-item__icon">🔑</span> API-Tokens
+        </button>
+        <button v-if="auth.status === 'authenticated'" class="nav-item" @click="logout">
+          <span class="nav-item__icon">⎋</span> Abmelden
+        </button>
+      </div>
     </nav>
 
     <!-- ───────────────────────── Main content ───────────────────────────── -->
     <main class="main-content">
+
+      <!-- ══ API tokens ══════════════════════════════════════════════════ -->
+      <section v-if="activeSection === 'tokens'">
+        <TokensPanel />
+      </section>
 
       <!-- ══ Speech ══════════════════════════════════════════════════════ -->
       <section v-if="activeSection === 'speech'">
@@ -794,6 +910,28 @@ async function downloadOgg() {
             <div class="speech-panel__header">
               <span class="speech-panel__icon">🎤</span>
               <h2 class="speech-panel__title">Speech-to-Text</h2>
+              <div v-if="isAdmin" class="bench-wrap">
+                <button
+                  class="bench-btn"
+                  :disabled="modelLoading || benchRunning || !availableModels.some(m => m.cached)"
+                  aria-describedby="bench-tip"
+                  @click="startBenchmark"
+                >
+                  <span v-if="benchRunning" class="spinner" />
+                  <span v-else class="bench-btn__icon">⏱</span>
+                  {{ benchRunning ? `Benchmark ${benchState.done}/${benchState.total}` : 'Benchmark' }}
+                </button>
+                <div id="bench-tip" class="bench-tip" role="tooltip">
+                  <strong>Was der Benchmark tut</strong>
+                  <p>Misst, wie schnell dieser Server transkribiert. Jedes bereits heruntergeladene Whisper-Modell
+                    transkribiert ein 15-Sekunden-Sprachsample zweimal, der schnellere Durchlauf zählt.</p>
+                  <p>Ergebnis: <em>Sekunden je Minute Audio</em>, angezeigt in den Modelldetails unter „Tempo“,
+                    gespeichert je Modell, Gerät und Rechentyp.</p>
+                  <p>Dauer: Sekunden bei kleinen, mehrere Minuten bei großen Modellen auf CPU. Laufende Transkriptionen
+                    werden nicht unterbrochen; nicht aktive Modelle werden vorübergehend zusätzlich geladen.</p>
+                  <p v-if="!availableModels.some(m => m.cached)" class="bench-tip__note">Zurzeit ist kein Modell heruntergeladen.</p>
+                </div>
+              </div>
             </div>
             <div class="speech-panel__body">
 
@@ -830,11 +968,21 @@ async function downloadOgg() {
                   v-if="selectedModel && selectedModel !== activeModel"
                   class="btn-load"
                   :class="{ 'btn-load--download': !selectedModelMeta?.cached }"
-                  :disabled="modelLoading"
+                  :disabled="modelLoading || !isAdmin"
+                  :title="isAdmin ? '' : 'Nur Administratoren können das Modell wechseln'"
                   @click="applyModelSelection"
                 >
                   <span v-if="modelLoading" class="spinner" />
                   {{ selectedModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
+                </button>
+                <button
+                  v-if="isAdmin && selectedModelMeta?.cached && selectedModel !== activeModel"
+                  class="btn-load btn-load--remove"
+                  :disabled="modelLoading || cacheBusy"
+                  :title="`Modelldateien löschen (${formatSize(selectedModelMeta.size_on_disk_mb)})`"
+                  @click="removeModelCache"
+                >
+                  Entfernen
                 </button>
                 <div class="model-debug">
                   <span
@@ -851,32 +999,46 @@ async function downloadOgg() {
               </div>
 
               <!-- Modell-Infokarte -->
+              <div v-if="benchRunning" class="bench-note">
+                <span class="spinner" /> Benchmark läuft: {{ benchState.current || 'Modell wird geladen' }} ({{ benchState.done }}/{{ benchState.total }} fertig)
+              </div>
+              <div v-else-if="benchState.phase === 'error'" class="bench-note bench-note--error">
+                Benchmark fehlgeschlagen: {{ benchState.error }}
+              </div>
+
               <div v-if="selectedModelMeta" class="model-card">
-                <div class="model-card__row">
-                  <span class="model-card__chip">{{ selectedModelMeta.params }} Params</span>
-                  <span class="model-card__chip">{{ formatSize(selectedModelMeta.size_int8_mb) }}</span>
-                  <span class="model-card__chip">{{ deviceInfo.compute_type }}</span>
+                <div class="model-card__head">
+                  <span class="model-card__name">{{ selectedModelMeta.name }}</span>
+                  <span v-if="selectedModelMeta.name === activeModel" class="model-card__state model-card__state--active">aktiv</span>
+                  <span v-else-if="selectedModelMeta.cached" class="model-card__state model-card__state--cached">im Cache · {{ formatSize(selectedModelMeta.size_on_disk_mb) }}</span>
+                  <span v-else class="model-card__state">nicht heruntergeladen</span>
                 </div>
-                <div class="model-card__row">
-                  <span class="model-card__label">Qualität</span>
-                  <span class="badge" :class="qualityClass(selectedModelMeta.quality)">
-                    {{ selectedModelMeta.quality }}&nbsp;(WER&nbsp;~{{ selectedModelMeta.wer_pct }}%)
-                  </span>
-                  <span class="model-card__sep">·</span>
-                  <span class="model-card__label">Geschwindigkeit</span>
-                  <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
-                </div>
-                <div v-if="systemInfo" class="model-card__row model-card__hw">
-                  <span>{{ systemInfo.cpu_count }}× {{ systemInfo.cpu_model }}</span>
-                  <template v-if="systemInfo.gpus && systemInfo.gpus.length > 0">
-                    <span class="model-card__sep">·</span>
-                    <span v-for="gpu in systemInfo.gpus" :key="gpu.index">
-                      {{ gpu.name }} ({{ formatSize(gpu.memory_mb) }})
-                    </span>
+                <dl class="model-card__grid">
+                  <dt>Parameter</dt>
+                  <dd>{{ selectedModelMeta.params }}</dd>
+                  <dt>Größe</dt>
+                  <dd>{{ formatSize(selectedModelMeta.size_int8_mb) }} <span class="model-card__muted">(int8)</span></dd>
+                  <dt>Qualität</dt>
+                  <dd>
+                    <span class="badge" :class="qualityClass(selectedModelMeta.quality)">{{ selectedModelMeta.quality }}</span>
+                    <span class="model-card__muted">WER ~{{ selectedModelMeta.wer_pct }} %</span>
+                  </dd>
+                  <dt>Tempo</dt>
+                  <dd>
+                    <span class="badge" :class="speedClass(selectedModelSpeed)">{{ selectedModelSpeed }}</span>
+                    <template v-if="formatBenchmark(selectedModelMeta.benchmark)">
+                      <span class="model-card__measured">≈ {{ formatBenchmark(selectedModelMeta.benchmark).perMinute }} s je Minute Audio</span>
+                      <span class="model-card__muted" :title="`Realtime-Faktor ${formatBenchmark(selectedModelMeta.benchmark).rtf}`">gemessen {{ formatBenchmark(selectedModelMeta.benchmark).date }} auf {{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
+                    </template>
+                    <span v-else class="model-card__muted">auf {{ deviceInfo.device }} · {{ deviceInfo.compute_type }}<template v-if="isAdmin && selectedModelMeta.cached"> · noch nicht gemessen</template></span>
+                  </dd>
+                  <template v-if="systemInfo">
+                    <dt>Hardware</dt>
+                    <dd class="model-card__hw" :title="systemInfo.cpu_model">
+                      {{ systemInfo.cpu_count }}× {{ systemInfo.cpu_model }}<template v-if="systemInfo.gpus && systemInfo.gpus.length > 0"><span v-for="gpu in systemInfo.gpus" :key="gpu.index">, {{ gpu.name }} ({{ formatSize(gpu.memory_mb) }})</span></template>
+                    </dd>
                   </template>
-                  <span class="model-card__sep">·</span>
-                  <span class="model-card__active">{{ deviceInfo.device }} · {{ deviceInfo.compute_type }}</span>
-                </div>
+                </dl>
               </div>
               <div class="stt-options">
                 <div class="option-row">
@@ -1004,10 +1166,20 @@ async function downloadOgg() {
                 <button v-if="selectedTtsModel && selectedTtsModel !== activeTtsModel"
                   class="btn-load"
                   :class="{ 'btn-load--download': !selectedTtsModelMeta?.cached }"
-                  :disabled="ttsModelLoading"
+                  :disabled="ttsModelLoading || !isAdmin"
+                  :title="isAdmin ? '' : 'Nur Administratoren können das Modell wechseln'"
                   @click="applyTtsModelSelection">
                   <span v-if="ttsModelLoading" class="spinner" />
                   {{ selectedTtsModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
+                </button>
+                <button
+                  v-if="isAdmin && selectedTtsModelMeta?.cached && selectedTtsModel !== activeTtsModel"
+                  class="btn-load btn-load--remove"
+                  :disabled="ttsModelLoading || cacheBusy"
+                  :title="`Modelldatei löschen (${formatSize(selectedTtsModelMeta.size_on_disk_mb)})`"
+                  @click="removeTtsModelCache"
+                >
+                  Entfernen
                 </button>
                 <div class="model-debug">
                   <span v-for="m in availableTtsModels" :key="m.name" class="model-chip"
@@ -1019,17 +1191,22 @@ async function downloadOgg() {
 
               <!-- TTS model info card -->
               <div v-if="selectedTtsModelMeta" class="model-card">
-                <div class="model-card__row">
-                  <span class="model-card__chip">{{ selectedTtsModelMeta.precision }}</span>
-                  <span class="model-card__chip">{{ formatSize(selectedTtsModelMeta.size_mb) }}</span>
+                <div class="model-card__head">
+                  <span class="model-card__name">{{ selectedTtsModelMeta.name }}</span>
+                  <span v-if="selectedTtsModelMeta.name === activeTtsModel" class="model-card__state model-card__state--active">aktiv</span>
+                  <span v-else-if="selectedTtsModelMeta.cached" class="model-card__state model-card__state--cached">im Cache · {{ formatSize(selectedTtsModelMeta.size_on_disk_mb) }}</span>
+                  <span v-else class="model-card__state">nicht heruntergeladen</span>
                 </div>
-                <div class="model-card__row">
-                  <span class="model-card__label">Qualität</span>
-                  <span class="badge" :class="qualityClass(selectedTtsModelMeta.quality)">{{ selectedTtsModelMeta.quality }}</span>
-                  <span class="model-card__sep">·</span>
-                  <span class="model-card__label">Geschwindigkeit</span>
-                  <span class="badge" :class="speedClass(selectedTtsModelMeta.speed)">{{ selectedTtsModelMeta.speed }}</span>
-                </div>
+                <dl class="model-card__grid">
+                  <dt>Präzision</dt>
+                  <dd>{{ selectedTtsModelMeta.precision }}</dd>
+                  <dt>Größe</dt>
+                  <dd>{{ formatSize(selectedTtsModelMeta.size_mb) }}</dd>
+                  <dt>Qualität</dt>
+                  <dd><span class="badge" :class="qualityClass(selectedTtsModelMeta.quality)">{{ selectedTtsModelMeta.quality }}</span></dd>
+                  <dt>Tempo</dt>
+                  <dd><span class="badge" :class="speedClass(selectedTtsModelMeta.speed)">{{ selectedTtsModelMeta.speed }}</span></dd>
+                </dl>
               </div>
 
               <!-- Voice selector -->
@@ -2388,6 +2565,94 @@ pre {
   color: #fbbf24;
 }
 
+.btn-load--remove {
+  background: transparent;
+  border: 1px solid #3b2a5c;
+  color: #c4a7e7;
+}
+
+.btn-load--remove:hover:not(:disabled) {
+  background: #2a1d44;
+  color: #e0c4ff;
+}
+
+.bench-wrap {
+  margin-left: auto;
+  position: relative;
+}
+
+.bench-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 7px;
+  border: 1px solid #1e3a5f;
+  background: transparent;
+  color: #7dd3fc;
+  font-size: 0.78rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.bench-btn:hover:not(:disabled),
+.bench-btn:focus-visible {
+  background: #0c2238;
+  color: #bae6fd;
+  outline: none;
+}
+
+.bench-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.bench-btn__icon { font-size: 0.9rem; }
+
+.bench-tip {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 320px;
+  z-index: 20;
+  background: #0f1227;
+  border: 1px solid #23264a;
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: #b0b3d0;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  pointer-events: none;
+}
+
+.bench-tip strong { display: block; color: #d0d4ff; margin-bottom: 0.3rem; font-size: 0.8rem; }
+.bench-tip p { margin: 0 0 0.45rem; }
+.bench-tip p:last-child { margin-bottom: 0; }
+.bench-tip em { color: #7dd3fc; font-style: normal; font-weight: 600; }
+.bench-tip__note { color: #fb923c; }
+
+.bench-wrap:hover .bench-tip,
+.bench-btn:focus-visible + .bench-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.bench-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #7dd3fc;
+  margin: 0 0 0.6rem;
+}
+
+.bench-note--error { color: #f87171; }
+
+.model-card__measured { color: #7dd3fc; font-weight: 600; }
+
 .btn-load--download:hover:not(:disabled) {
   background: #1c1207;
 }
@@ -2397,44 +2662,73 @@ pre {
   background: #07091a;
   border: 1px solid #181b35;
   border-radius: 9px;
-  padding: 0.55rem 0.85rem;
+  padding: 0.6rem 0.85rem 0.65rem;
   margin-bottom: 0.9rem;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.45rem;
   font-size: 0.78rem;
 }
 
-.model-card__row {
+.model-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid #12142c;
+}
+
+.model-card__name {
+  font-weight: 600;
+  color: #c7cbe8;
+  font-size: 0.84rem;
+}
+
+.model-card__state {
+  margin-left: auto;
+  color: #454868;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.model-card__state--active { color: #a5b4fc; font-weight: 500; }
+.model-card__state--cached { color: #4ade80; }
+
+.model-card__grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 0.9rem;
+  row-gap: 0.3rem;
+  margin: 0;
+  align-items: center;
+}
+
+.model-card__grid dt {
+  color: #454868;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.model-card__grid dd {
+  margin: 0;
+  color: #b0b3d0;
   display: flex;
   align-items: center;
+  gap: 0.45rem;
   flex-wrap: wrap;
-  gap: 0.3rem;
+  min-width: 0;
 }
 
-.model-card__chip {
-  background: #0c0e22;
-  border: 1px solid #1e2244;
-  border-radius: 5px;
-  padding: 0.07rem 0.38rem;
-  color: #8a8eb0;
-  font-size: 0.75rem;
-}
-
-.model-card__label { color: #454868; }
-.model-card__sep   { color: #1e2244; user-select: none; }
+.model-card__muted { color: #5c6080; }
 
 .model-card__hw {
-  color: #3a3d58;
-  font-size: 0.73rem;
+  color: #6b6f90;
+  font-size: 0.74rem;
+  display: block !important;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.model-card__active {
-  color: #6a60b8;
-  font-weight: 500;
 }
 
 /* ── Badges ─────────────────────────────────────────────────────────────── */
@@ -2488,5 +2782,53 @@ pre {
   color: #a5b4fc;
   background: #1e1b4b;
   font-weight: 600;
+}
+
+/* ── Auth ───────────────────────────────────────────────────────────────── */
+.auth-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5c6080;
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 0.9rem;
+  background: #09091a;
+}
+
+.sidebar__user {
+  margin-top: auto;
+  padding: 0.75rem 0.5rem 0;
+  border-top: 1px solid #181b35;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.sidebar__user-name {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.82rem;
+  color: #8b8fb0;
+  min-width: 0;
+}
+
+.sidebar__user-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__badge {
+  margin-left: auto;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: #171a36;
+  color: #a5b4fc;
 }
 </style>

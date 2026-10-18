@@ -1,4 +1,13 @@
-"""FastMCP stdio server exposing conversion tools."""
+"""FastMCP server exposing conversion tools.
+
+``create_server(http=False)`` builds the stdio server used by ``holy-moly-mcp``. The HTTP
+transport (mounted into the FastAPI app, see ``docs/http-transport.md``) calls
+``create_server(http=True)``, which attaches the shared auth provider and per-tool role checks.
+
+The role checks must only be attached for HTTP: without a bearer token (stdio, in-memory
+clients) FastMCP hides every tool that carries an ``auth`` check, so a stdio server built with
+``http=True`` would expose no tools at all.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +17,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
 from fastmcp import FastMCP
+from fastmcp.server.auth import AuthCheck, require_roles
 from fastmcp.server.providers.base import Provider
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, model_validator
 
+from holy_moly_server import auth as auth_module
+from holy_moly_server.auth import ROLE_USER, roles_of
 from holy_moly_server.services.converter import (
     TranscriptionMode,
     process_audio_from_path,
@@ -39,10 +51,6 @@ class _ModelStartupProvider(Provider):
         yield
 
 
-mcp = FastMCP("Holy-Moly-Converter")
-mcp.add_provider(_ModelStartupProvider())
-
-
 class SpeechToolRequest(BaseModel):
     """Validated MCP request payload for speech transcription."""
 
@@ -62,7 +70,11 @@ class SpeechToolRequest(BaseModel):
         return self
 
 
-@mcp.tool()
+# ---------------------------------------------------------------------------
+# Tool implementations (plain functions; registered by ``create_server``)
+# ---------------------------------------------------------------------------
+
+
 async def convert_speech_to_text(
     file_path: Optional[str] = None,
     url: Optional[HttpUrl] = None,
@@ -105,7 +117,6 @@ async def convert_speech_to_text(
         return f"Speech-to-text conversion failed: {error}"
 
 
-@mcp.tool()
 async def convert_pdf_to_markdown(file_path: str) -> str:
     """Placeholder tool for future PDF-to-Markdown support."""
     try:
@@ -113,6 +124,40 @@ async def convert_pdf_to_markdown(file_path: str) -> str:
     except Exception as error:
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         return f"PDF conversion failed: {error}"
+
+
+# ---------------------------------------------------------------------------
+# Server factory
+# ---------------------------------------------------------------------------
+
+#: Every conversion tool requires this role over HTTP. Admin-only operations (model switching)
+#: are REST-only today, so there is no admin tool yet.
+_USER_TOOLS = (convert_speech_to_text, convert_pdf_to_markdown)
+
+
+def create_server(http: bool = False) -> FastMCP:
+    """Build the FastMCP server.
+
+    Args:
+        http: ``True`` when the server will be served over HTTP. Attaches the shared auth
+              provider and requires the ``holy-moly-user`` role on every tool. ``False`` for
+              stdio, where the process runs locally under the caller's own account.
+    """
+    checks: list[AuthCheck] | None = None
+    provider = None
+    if http and auth_module.auth is not None:
+        provider = auth_module.auth
+        checks = [require_roles(ROLE_USER, extract=roles_of)]
+
+    server = FastMCP("Holy-Moly-Converter", auth=provider)
+    server.add_provider(_ModelStartupProvider())
+    for tool in _USER_TOOLS:
+        server.tool(tool, auth=checks)
+    return server
+
+
+#: stdio server instance (kept for backwards compatibility with ``from ... import mcp``).
+mcp = create_server(http=False)
 
 
 def main() -> None:

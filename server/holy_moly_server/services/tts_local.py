@@ -152,11 +152,37 @@ def is_tts_model_cached(name: str) -> bool:
     return bool(meta and (KOKORO_CACHE_DIR / meta["file"]).exists())
 
 
+def get_tts_model_cache_size_mb(name: str) -> int:
+    meta = _model_meta(name)
+    path = KOKORO_CACHE_DIR / meta["file"] if meta else None
+    return round(path.stat().st_size / (1024 * 1024)) if path and path.exists() else 0
+
+
+def delete_tts_model_cache(name: str) -> int:
+    """Remove a downloaded Kokoro model file. Returns the freed size in MB.
+
+    The shared ``voices-v1.0.bin`` stays; it is small and used by every Kokoro model.
+    Refuses for the active model, whose file is open in the ONNX session.
+    """
+    meta = _model_meta(name)
+    if not meta:
+        raise ValueError(f"Unknown TTS model '{name}'")
+    if name == _active_tts_model:
+        raise ValueError(f"TTS model '{name}' is active; switch to another model first.")
+    path = KOKORO_CACHE_DIR / meta["file"]
+    if not path.exists():
+        raise FileNotFoundError(f"TTS model '{name}' is not in the cache.")
+    size_mb = get_tts_model_cache_size_mb(name)
+    path.unlink()
+    print(f"[holy-moly/tts] Removed cached TTS model '{name}' ({size_mb} MB)", file=sys.stderr, flush=True)
+    return size_mb
+
+
 def get_tts_model_info() -> dict:
     """Return available TTS models with cache status and the active model name."""
     return {
         "models": [
-            {**m, "cached": is_tts_model_cached(m["name"])}
+            {**m, "cached": is_tts_model_cached(m["name"]), "size_on_disk_mb": get_tts_model_cache_size_mb(m["name"])}
             for m in TTS_MODELS
         ],
         "active": _active_tts_model,

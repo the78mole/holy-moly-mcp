@@ -11,22 +11,29 @@ import subprocess
 import sys
 import traceback
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from holy_moly_server import api_tokens, local_accounts
+from holy_moly_server.auth import ensure_auth_configured, require_admin, require_user
+from holy_moly_server.mcp_http import mount_mcp
+from holy_moly_server.mcp_server import create_server
+from holy_moly_server.services import benchmark
 from holy_moly_server.services.converter import (
     MODEL_METADATA,
+    delete_model_cache,
     get_active_model_name,
     get_available_languages,
     get_available_models,
     get_model_cache_path,
+    get_model_cache_size_mb,
     get_model_status,
     is_model_cached,
     process_audio,
@@ -36,6 +43,7 @@ from holy_moly_server.services.converter import (
 from holy_moly_server.services.md_to_pdf import convert_html_to_pdf
 from holy_moly_server.services.pdf_converter import convert_pdf_bytes, convert_pdf_from_url
 from holy_moly_server.services.tts_local import (
+    delete_tts_model_cache,
     get_ogg_path,
     get_tts_model_info,
     get_tts_model_status,
@@ -106,11 +114,15 @@ def _get_gpus() -> list[dict]:
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI):  # noqa: ARG001
-    """Trigger STT and TTS model loading at server startup."""
-    await start_model_loading()
-    await start_tts_model_loading()
-    yield
+async def lifespan(application: FastAPI):
+    """Refuse to start without auth config, start the MCP session manager, then load the models."""
+    ensure_auth_configured()
+    async with AsyncExitStack() as stack:
+        # The MCP sub-app's lifespan must run, or /mcp-server/mcp fails on the first request.
+        await stack.enter_async_context(mcp_app.lifespan(application))
+        await start_model_loading()
+        await start_tts_model_loading()
+        yield
 
 
 app = FastAPI(
@@ -134,6 +146,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Public auth endpoints: /api/v1/auth/login (local accounts) and /api/v1/auth/config.
+app.include_router(local_accounts.router)
+# Personal API tokens (authenticated): /api/v1/auth/tokens
+app.include_router(api_tokens.router)
+
+# MCP over Streamable HTTP at /mcp-server/mcp, sharing the auth provider with the REST API.
+mcp_app = mount_mcp(app, create_server(http=True))
+
+# Every /api/v1 route below carries one of these. See docs/auth-oidc-and-tokens.md, section 5.3.
+AS_USER = {"dependencies": [Depends(require_user)]}
+AS_ADMIN = {"dependencies": [Depends(require_admin)]}
+
 
 # ---------------------------------------------------------------------------
 # Model status SSE
@@ -150,7 +174,7 @@ async def _model_status_generator():
         await asyncio.sleep(0.5)
 
 
-@app.get("/api/v1/model/status", tags=["Model"])
+@app.get("/api/v1/model/status", tags=["Model"], **AS_USER)
 async def model_status_stream():
     """Server-Sent Events stream of model loading progress."""
     return StreamingResponse(
@@ -163,11 +187,12 @@ async def model_status_stream():
     )
 
 
-@app.get("/api/v1/model/info", tags=["Model"])
+@app.get("/api/v1/model/info", tags=["Model"], **AS_USER)
 async def model_info():
     """Return the active model, device info, enriched model list, and available languages."""
     device = os.environ.get("HOLY_MOLY_DEVICE", "cpu")
     compute_type = os.environ.get("HOLY_MOLY_COMPUTE_TYPE", "int8")
+    benchmarks = benchmark.results_for_current_hardware()
     return {
         "active": get_active_model_name(),
         "device": device,
@@ -177,6 +202,8 @@ async def model_info():
                 "name": m,
                 "cached": is_model_cached(m),
                 "path": get_model_cache_path(m),
+                "size_on_disk_mb": get_model_cache_size_mb(m),
+                "benchmark": benchmarks.get(m),
                 **MODEL_METADATA.get(m, {}),
             }
             for m in get_available_models()
@@ -185,7 +212,7 @@ async def model_info():
     }
 
 
-@app.post("/api/v1/model/load", tags=["Model"])
+@app.post("/api/v1/model/load", tags=["Model"], **AS_ADMIN)
 async def model_load(model: str = Body(..., embed=True)):
     """Switch the active Whisper model."""
     try:
@@ -195,7 +222,63 @@ async def model_load(model: str = Body(..., embed=True)):
     return {"status": "loading", "model": model}
 
 
-@app.get("/api/v1/system/info", tags=["System"])
+class BenchmarkRequest(BaseModel):
+    models: list[str] | None = Field(None, description="Models to measure; default: every downloaded model.")
+
+
+@app.post("/api/v1/model/benchmark", tags=["Model"], **AS_ADMIN)
+async def model_benchmark_start(payload: BenchmarkRequest | None = None):
+    """Measure transcription speed of the downloaded models on this machine (runs in the background)."""
+    try:
+        models = await benchmark.start_benchmark(payload.models if payload else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "running", "models": models}
+
+
+async def _benchmark_status_generator():
+    last = None
+    while True:
+        state = benchmark.get_run_state()
+        if state != last:
+            yield f"data: {json.dumps(state)}\n\n"
+            last = state
+        if state["phase"] != "running":
+            break
+        await asyncio.sleep(1.0)
+
+
+@app.get("/api/v1/model/benchmark/status", tags=["Model"], **AS_USER)
+async def model_benchmark_status():
+    """Server-Sent Events stream of the running benchmark (ends when it is idle, done or failed)."""
+    return StreamingResponse(
+        _benchmark_status_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/v1/model/benchmark", tags=["Model"], **AS_USER)
+async def model_benchmark_results():
+    """All stored benchmark results (every device/compute type)."""
+    return {"results": [r.as_dict() for r in benchmark.get_store().all()], "run": benchmark.get_run_state()}
+
+
+@app.delete("/api/v1/model/cache/{model_name}", tags=["Model"], **AS_ADMIN)
+async def model_cache_delete(model_name: str):
+    """Remove a downloaded Whisper model from the cache volume (not the active one)."""
+    try:
+        freed_mb = await asyncio.to_thread(delete_model_cache, model_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted", "model": model_name, "freed_mb": freed_mb}
+
+
+@app.get("/api/v1/system/info", tags=["System"], **AS_ADMIN)
 async def system_info():
     """Return hardware information available to the server process."""
     return {
@@ -210,7 +293,7 @@ async def system_info():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/v1/convert/speech-to-text", tags=["Conversion"])
+@app.post("/api/v1/convert/speech-to-text", tags=["Conversion"], **AS_USER)
 async def convert_speech_to_text_api(
     file: UploadFile = File(...),
     mode: str = Query(default="plain"),
@@ -240,7 +323,7 @@ async def convert_speech_to_text_api(
         raise HTTPException(status_code=500, detail=f"Conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/pdf-to-markdown", tags=["Conversion"])
+@app.post("/api/v1/convert/pdf-to-markdown", tags=["Conversion"], **AS_USER)
 async def convert_pdf_to_markdown_api(
     file: UploadFile = File(...),
     timeout: int = Query(default=0, ge=0, description="Subprocess timeout in seconds (0 = use server default)"),
@@ -263,7 +346,7 @@ async def convert_pdf_to_markdown_api(
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/pdf-from-url", tags=["Conversion"])
+@app.post("/api/v1/convert/pdf-from-url", tags=["Conversion"], **AS_USER)
 async def convert_pdf_from_url_api(payload: PdfFromUrlRequest) -> dict[str, str]:
     """Download a PDF from a URL and convert it to Markdown."""
     url = payload.url.strip()
@@ -283,7 +366,7 @@ async def convert_pdf_from_url_api(payload: PdfFromUrlRequest) -> dict[str, str]
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {error}") from error
 
 
-@app.post("/api/v1/convert/markdown-to-pdf", tags=["Conversion"])
+@app.post("/api/v1/convert/markdown-to-pdf", tags=["Conversion"], **AS_USER)
 async def markdown_to_pdf_api(payload: MarkdownToPdfRequest) -> Response:
     """Convert a rendered HTML document (from Markdown) to PDF via WeasyPrint."""
     html = payload.html.strip()
@@ -306,13 +389,13 @@ async def markdown_to_pdf_api(payload: MarkdownToPdfRequest) -> Response:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/v1/convert/text-to-speech/models", tags=["Text-to-Speech"])
+@app.get("/api/v1/convert/text-to-speech/models", tags=["Text-to-Speech"], **AS_USER)
 async def tts_models():
     """Return the list of available Kokoro TTS voices."""
     return {"voices": get_tts_voices()}
 
 
-@app.get("/api/v1/convert/text-to-speech/stream", tags=["Text-to-Speech"])
+@app.get("/api/v1/convert/text-to-speech/stream", tags=["Text-to-Speech"], **AS_USER)
 async def tts_stream(
     text: str = Query(..., min_length=1, max_length=2000),
     voice_id: str = Query(...),
@@ -340,7 +423,7 @@ async def tts_stream(
     )
 
 
-@app.get("/api/v1/convert/text-to-speech/download/{task_id}", tags=["Text-to-Speech"])
+@app.get("/api/v1/convert/text-to-speech/download/{task_id}", tags=["Text-to-Speech"], **AS_USER)
 async def tts_download(task_id: str):
     """Return the saved OGG file for a completed TTS task."""
     try:
@@ -372,13 +455,13 @@ async def _tts_model_status_generator():
         await asyncio.sleep(0.3)
 
 
-@app.get("/api/v1/tts/model/info", tags=["Text-to-Speech"])
+@app.get("/api/v1/tts/model/info", tags=["Text-to-Speech"], **AS_USER)
 async def tts_model_info():
     """Return available TTS models and which one is active."""
     return get_tts_model_info()
 
 
-@app.get("/api/v1/tts/model/status", tags=["Text-to-Speech"])
+@app.get("/api/v1/tts/model/status", tags=["Text-to-Speech"], **AS_USER)
 async def tts_model_status():
     """SSE stream of TTS model loading progress."""
     return StreamingResponse(
@@ -388,7 +471,19 @@ async def tts_model_status():
     )
 
 
-@app.post("/api/v1/tts/model/load", tags=["Text-to-Speech"])
+@app.delete("/api/v1/tts/model/cache/{model_name}", tags=["Text-to-Speech"], **AS_ADMIN)
+async def tts_model_cache_delete(model_name: str):
+    """Remove a downloaded Kokoro TTS model from the cache volume (not the active one)."""
+    try:
+        freed_mb = await asyncio.to_thread(delete_tts_model_cache, model_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted", "model": model_name, "freed_mb": freed_mb}
+
+
+@app.post("/api/v1/tts/model/load", tags=["Text-to-Speech"], **AS_ADMIN)
 async def tts_model_load(payload: TtsModelLoadRequest):
     """Switch to a different TTS model (downloads if needed)."""
     try:

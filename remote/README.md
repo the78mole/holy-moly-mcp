@@ -18,6 +18,7 @@ uvx holy-moly-mcp-remote
 | Env var | Description |
 |---|---|
 | `HOLY_MOLY_API_URL` | Base URL of the remote `holy-moly-web` FastAPI backend |
+| `HOLY_MOLY_API_TOKEN` | Bearer token for that backend (static API token or a token from `POST /api/v1/auth/login`); leave empty if the deployment has no auth. Sent only to the API, never to third-party download URLs. |
 | `HOLY_MOLY_DEFAULT_WHISPER_MODEL` | Default speech-to-text model to request (optional; per-call `model` argument overrides it) |
 | `HOLY_MOLY_DEFAULT_TTS_MODEL` | Default Kokoro TTS model to request (optional; per-call `model` argument overrides it) |
 
@@ -38,7 +39,8 @@ uvx holy-moly-mcp-remote
       "command": "uvx",
       "args": ["holy-moly-mcp-remote"],
       "env": {
-        "HOLY_MOLY_API_URL": "http://your-holy-moly-web-host:8080"
+        "HOLY_MOLY_API_URL": "http://your-holy-moly-web-host:8080",
+        "HOLY_MOLY_API_TOKEN": "hm_..."
       }
     }
   }

@@ -16,6 +16,11 @@ from urllib.parse import urlparse
 import httpx
 from faster_whisper import WhisperModel
 
+try:  # faster-whisper's own name -> HuggingFace repo table (private, but the source of truth)
+    from faster_whisper.utils import _MODELS as _FW_MODELS
+except Exception:  # noqa: BLE001
+    _FW_MODELS = {}
+
 ALLOWED_AUDIO_EXTENSIONS: set[str] = {".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".wav", ".webm"}
 MAX_DOWNLOAD_SIZE_BYTES = 100 * 1024 * 1024
 DEFAULT_AUDIO_FILENAME = "downloaded-audio.wav"
@@ -188,10 +193,24 @@ def get_active_model_name() -> str:
         return _state.active_model_name
 
 
+def get_loaded_model_instance():
+    """Return the loaded WhisperModel when the active model is ready, else None (benchmark reuse)."""
+    with _state_lock:
+        return _state.instance if _state.phase == ModelPhase.READY else None
+
+
 def _model_hf_repo(model_name: str) -> str:
-    """Map a faster-whisper model name to its HuggingFace repository path."""
+    """Map a faster-whisper model name to its HuggingFace repository path.
+
+    Uses faster-whisper's own table first: ``large-v3-turbo`` lives under
+    ``mobiuslabsgmbh/``, the distil models under ``Systran/faster-distil-whisper-*``, so a
+    naive ``Systran/faster-whisper-<name>`` guess reports those models as "not downloaded"
+    although the files are in the cache.
+    """
+    if model_name in _FW_MODELS:
+        return _FW_MODELS[model_name]
     if model_name.startswith("distil-"):
-        return f"distil-whisper/{model_name}"
+        return f"Systran/faster-distil-whisper-{model_name[len('distil-'):]}"
     return f"Systran/faster-whisper-{model_name}"
 
 
@@ -200,17 +219,57 @@ def _hf_cache_dirname(hf_repo: str) -> str:
     return "models--" + hf_repo.replace("/", "--")
 
 
+def _hf_hub_dir() -> Path:
+    return Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+
+
 def is_model_cached(model_name: str) -> bool:
-    """Return True when the faster-whisper model files are present in the HF cache."""
-    hf_cache = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-    candidate = hf_cache / _hf_cache_dirname(_model_hf_repo(model_name))
-    return candidate.exists() and any(candidate.iterdir())
+    """True when a complete snapshot (with ``model.bin``) of the model is in the HF cache.
+
+    A directory alone is not enough: an interrupted download leaves the folder behind
+    without a usable snapshot.
+    """
+    candidate = _hf_hub_dir() / _hf_cache_dirname(_model_hf_repo(model_name))
+    snapshots = candidate / "snapshots"
+    if not snapshots.is_dir():
+        return False
+    return any((snap / "model.bin").exists() for snap in snapshots.iterdir())
+
+
+def get_model_cache_size_mb(model_name: str) -> int:
+    """Disk usage of the model's cache directory in MB (0 when absent)."""
+    candidate = _hf_hub_dir() / _hf_cache_dirname(_model_hf_repo(model_name))
+    if not candidate.exists():
+        return 0
+    total = sum(f.stat().st_size for f in candidate.rglob("*") if f.is_file() and not f.is_symlink())
+    return round(total / (1024 * 1024))
+
+
+def delete_model_cache(model_name: str) -> int:
+    """Remove the model's files from the HF cache. Returns the freed size in MB.
+
+    Refuses for the model that is active or being loaded: faster-whisper keeps the files
+    memory-mapped, and the next request would fail.
+    """
+    import shutil  # noqa: PLC0415
+
+    if model_name == get_active_model_name():
+        raise ValueError(f"Model '{model_name}' is active or loading; switch to another model first.")
+    candidate = _hf_hub_dir() / _hf_cache_dirname(_model_hf_repo(model_name))
+    if not candidate.exists():
+        raise FileNotFoundError(f"Model '{model_name}' is not in the cache.")
+    size_mb = get_model_cache_size_mb(model_name)
+    shutil.rmtree(candidate)
+    lock_dir = _hf_hub_dir() / ".locks" / candidate.name
+    if lock_dir.exists():
+        shutil.rmtree(lock_dir, ignore_errors=True)
+    _log_to_stderr(f"[holy-moly] Removed cached model '{model_name}' ({size_mb} MB)")
+    return size_mb
 
 
 def get_model_cache_path(model_name: str) -> str:
     """Return the expected HuggingFace cache directory for a faster-whisper model."""
-    hf_cache = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-    return str(hf_cache / _hf_cache_dirname(_model_hf_repo(model_name)))
+    return str(_hf_hub_dir() / _hf_cache_dirname(_model_hf_repo(model_name)))
 
 
 def get_available_models() -> list[str]:
