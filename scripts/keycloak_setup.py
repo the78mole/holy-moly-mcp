@@ -194,7 +194,6 @@ def ensure_web_client(kc: Keycloak, realm: str, public_url: str, dev_origin: str
         "implicitFlowEnabled": False,
         "serviceAccountsEnabled": False,
         "redirectUris": [f"{o}/*" for o in origins],
-        "postLogoutRedirectUris": [f"{o}/*" for o in origins],
         "webOrigins": origins,
         "rootUrl": public_url,
         "baseUrl": public_url,
