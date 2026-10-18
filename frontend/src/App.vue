@@ -910,6 +910,28 @@ async function downloadOgg() {
             <div class="speech-panel__header">
               <span class="speech-panel__icon">🎤</span>
               <h2 class="speech-panel__title">Speech-to-Text</h2>
+              <div v-if="isAdmin" class="bench-wrap">
+                <button
+                  class="bench-btn"
+                  :disabled="modelLoading || benchRunning || !availableModels.some(m => m.cached)"
+                  aria-describedby="bench-tip"
+                  @click="startBenchmark"
+                >
+                  <span v-if="benchRunning" class="spinner" />
+                  <span v-else class="bench-btn__icon">⏱</span>
+                  {{ benchRunning ? `Benchmark ${benchState.done}/${benchState.total}` : 'Benchmark' }}
+                </button>
+                <div id="bench-tip" class="bench-tip" role="tooltip">
+                  <strong>Was der Benchmark tut</strong>
+                  <p>Misst, wie schnell dieser Server transkribiert. Jedes bereits heruntergeladene Whisper-Modell
+                    transkribiert ein 15-Sekunden-Sprachsample zweimal, der schnellere Durchlauf zählt.</p>
+                  <p>Ergebnis: <em>Sekunden je Minute Audio</em>, angezeigt in der Modellkarte und an den Modell-Chips,
+                    gespeichert je Modell, Gerät und Rechentyp.</p>
+                  <p>Dauer: Sekunden bei kleinen, mehrere Minuten bei großen Modellen auf CPU. Laufende Transkriptionen
+                    werden nicht unterbrochen; nicht aktive Modelle werden vorübergehend zusätzlich geladen.</p>
+                  <p v-if="!availableModels.some(m => m.cached)" class="bench-tip__note">Zurzeit ist kein Modell heruntergeladen.</p>
+                </div>
+              </div>
             </div>
             <div class="speech-panel__body">
 
@@ -961,16 +983,6 @@ async function downloadOgg() {
                   @click="removeModelCache"
                 >
                   Entfernen
-                </button>
-                <button
-                  v-if="isAdmin"
-                  class="btn-load btn-load--bench"
-                  :disabled="modelLoading || benchRunning || !availableModels.some(m => m.cached)"
-                  title="Transkriptionsgeschwindigkeit aller heruntergeladenen Modelle auf diesem Server messen"
-                  @click="startBenchmark"
-                >
-                  <span v-if="benchRunning" class="spinner" />
-                  {{ benchRunning ? `Benchmark ${benchState.done}/${benchState.total}` : 'Benchmark' }}
                 </button>
                 <div class="model-debug">
                   <span
@@ -2564,15 +2576,68 @@ pre {
   color: #e0c4ff;
 }
 
-.btn-load--bench {
-  background: transparent;
-  border: 1px solid #1e3a5f;
-  color: #7dd3fc;
+.bench-wrap {
+  margin-left: auto;
+  position: relative;
 }
 
-.btn-load--bench:hover:not(:disabled) {
+.bench-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 7px;
+  border: 1px solid #1e3a5f;
+  background: transparent;
+  color: #7dd3fc;
+  font-size: 0.78rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.bench-btn:hover:not(:disabled),
+.bench-btn:focus-visible {
   background: #0c2238;
   color: #bae6fd;
+  outline: none;
+}
+
+.bench-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.bench-btn__icon { font-size: 0.9rem; }
+
+.bench-tip {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 320px;
+  z-index: 20;
+  background: #0f1227;
+  border: 1px solid #23264a;
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: #b0b3d0;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  pointer-events: none;
+}
+
+.bench-tip strong { display: block; color: #d0d4ff; margin-bottom: 0.3rem; font-size: 0.8rem; }
+.bench-tip p { margin: 0 0 0.45rem; }
+.bench-tip p:last-child { margin-bottom: 0; }
+.bench-tip em { color: #7dd3fc; font-style: normal; font-weight: 600; }
+.bench-tip__note { color: #fb923c; }
+
+.bench-wrap:hover .bench-tip,
+.bench-btn:focus-visible + .bench-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 
 .bench-note {
