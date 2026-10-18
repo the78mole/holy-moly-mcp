@@ -207,6 +207,7 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
                 realm_url=config.realm_url,
                 base_url=config.public_url,
                 audience=config.audience,
+                required_scopes=[],  # see MultiAuth(required_scopes=[]) below
             )
             server.resource_base_url = AnyHttpUrl(resource_base)  # constructor has no parameter for it
         else:
@@ -216,7 +217,10 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
                     issuer=config.realm_url,
                     audience=config.audience,
                     algorithm="RS256",
-                    required_scopes=["openid"],
+                    # No scope requirement: it would be inherited by the MCP auth middleware and
+                    # reject personal/static/local tokens, which carry no OAuth scopes. Keycloak
+                    # access tokens always have `sub`; the audience check is what matters here.
+                    required_scopes=[],
                 ),
                 authorization_servers=[AnyHttpUrl(config.realm_url)],
                 base_url=config.public_url,
@@ -239,7 +243,13 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
     if config.token_spec:
         verifiers.append(HashedTokenVerifier(config.token_spec))
 
-    return MultiAuth(server=server, verifiers=verifiers, base_url=config.public_url, resource_base_url=resource_base)
+    return MultiAuth(
+        server=server,
+        verifiers=verifiers,
+        base_url=config.public_url,
+        resource_base_url=resource_base,
+        required_scopes=[],  # explicit: otherwise MultiAuth inherits the server's scope requirement
+    )
 
 
 # ---------------------------------------------------------------------------

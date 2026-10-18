@@ -43,7 +43,10 @@ class McpHttpTests(unittest.TestCase):
         # Same composition as auth.build_auth(): an OIDC-style server plus token verifiers.
         resource_base = f"{PUBLIC}{auth.MCP_MOUNT_PATH}"
         server = RemoteAuthProvider(
-            token_verifier=JWTVerifier(public_key="x" * 48, algorithm="HS256", issuer="https://kc.example/realms/r"),
+            # required_scopes mirrors a Keycloak-style verifier; MultiAuth below must not inherit it,
+            # or personal tokens (no OAuth scopes) get "insufficient_scope" from the MCP middleware.
+            token_verifier=JWTVerifier(public_key="x" * 48, algorithm="HS256", issuer="https://kc.example/realms/r",
+                                       required_scopes=["openid"]),
             authorization_servers=[AnyHttpUrl("https://kc.example/realms/r")],
             base_url=PUBLIC,
             resource_base_url=resource_base,
@@ -53,6 +56,7 @@ class McpHttpTests(unittest.TestCase):
             verifiers=[token_store.PersonalTokenVerifier(self.store)],
             base_url=PUBLIC,
             resource_base_url=resource_base,
+            required_scopes=[],
         )
         mcp = FastMCP("t", auth=self.provider)
 
