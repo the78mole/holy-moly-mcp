@@ -930,7 +930,9 @@ curl -s $BASE/.well-known/oauth-protected-resource/mcp-server/mcp | jq .
 # 3. Statisches Token: 200
 curl -s -o /dev/null -w '%{http_code}\n' $BASE/api/v1/model/info -H "Authorization: Bearer $HM_TOKEN"
 
-# 4. Keycloak-Token holen (Test-User, nur zum Prüfen; Direct Access Grants dafür temporär an)
+# 4. Keycloak-Token holen (Test-User, nur zum Prüfen; Direct Access Grants dafür temporär an).
+#    Ohne Browser und ohne Test-User geht es mit `scripts/keycloak_setup.py --verify`: temporärer
+#    Service-Account-Client, client_credentials-Token, GET model/info -> 200, system/info -> 403.
 KC_TOKEN=$(curl -s -d client_id=holy-moly-web -d grant_type=password \
   -d username=test -d password=… \
   https://kc.example/realms/holy-moly/protocol/openid-connect/token | jq -r .access_token)

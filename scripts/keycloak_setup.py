@@ -18,6 +18,13 @@ Usage:
     python scripts/keycloak_setup.py                 # create/update realm, roles, clients, mapper
     python scripts/keycloak_setup.py --grant-admin daniel   # also give realm user 'daniel' the admin role
     python scripts/keycloak_setup.py --create-user daniel   # create the user if missing (temporary password printed)
+    python scripts/keycloak_setup.py --verify               # end-to-end check with a temporary service-account client
+
+--verify creates a confidential client `holy-moly-verify` (service account, realm role holy-moly-user,
+same audience mapper as the SPA), fetches a client_credentials token, calls the backend at
+HOLY_MOLY_PUBLIC_URL (GET /api/v1/model/info -> 200, GET /api/v1/system/info -> 403) and deletes the
+client again. Only status codes and token claim *shapes* are printed; the client secret and the token
+stay in memory.
 
 Never pass secrets on the command line; read them from the environment (e.g. `bao kv get -field=...`).
 """
@@ -37,6 +44,7 @@ ROLE_USER = "holy-moly-user"
 ROLE_ADMIN = "holy-moly-admin"
 WEB_CLIENT = "holy-moly-web"
 API_CLIENT = "holy-moly-api"
+VERIFY_CLIENT = "holy-moly-verify"
 
 
 def env(name: str, default: str | None = None) -> str:
@@ -189,7 +197,11 @@ def ensure_web_client(kc: Keycloak, realm: str, public_url: str, dev_origin: str
         "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "basic"],
     }
     client = ensure_client(kc, realm, rep)
+    ensure_audience_mapper(kc, realm, client)
+    return client
 
+
+def ensure_audience_mapper(kc: Keycloak, realm: str, client: dict) -> None:
     # Audience mapper: without it the access token's `aud` never contains holy-moly-api and the
     # backend's JWTVerifier(audience="holy-moly-api") rejects every token.
     mappers = kc.get(f"/admin/realms/{realm}/clients/{client['id']}/protocol-mappers/models")
@@ -211,7 +223,6 @@ def ensure_web_client(kc: Keycloak, realm: str, public_url: str, dev_origin: str
     else:
         kc.put(f"/admin/realms/{realm}/clients/{client['id']}/protocol-mappers/models/{existing['id']}", {**existing, **mapper})
         print("audience mapper: updated")
-    return client
 
 
 def ensure_api_client(kc: Keycloak, realm: str) -> dict:
@@ -269,10 +280,106 @@ def grant_admin(kc: Keycloak, realm: str, username: str) -> None:
     print(f"user {username}: granted {ROLE_ADMIN}")
 
 
+def _http_status(url: str, token: str) -> int:
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            return res.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def _jwt_claims(token: str) -> dict:
+    """Decode the payload without verifying it; used only to report the claim *shape*."""
+    import base64
+
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def verify(kc: Keycloak, base_url: str, realm: str, public_url: str) -> bool:
+    """End-to-end check with a temporary confidential client; always deletes the client afterwards.
+
+    Returns True when the backend answered 200 for a user endpoint and 403 for an admin endpoint.
+    """
+    rep = {
+        "clientId": VERIFY_CLIENT,
+        "name": "Holy Moly verification (temporary)",
+        "description": "Created by scripts/keycloak_setup.py --verify; safe to delete.",
+        "protocol": "openid-connect",
+        "publicClient": False,
+        "standardFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "implicitFlowEnabled": False,
+        "serviceAccountsEnabled": True,
+    }
+    client = ensure_client(kc, realm, rep)
+    ok = False
+    try:
+        ensure_audience_mapper(kc, realm, client)
+        sa_user = kc.get(f"/admin/realms/{realm}/clients/{client['id']}/service-account-user")
+        current = {r["name"] for r in kc.get(f"/admin/realms/{realm}/users/{sa_user['id']}/role-mappings/realm")}
+        if ROLE_USER not in current:
+            role = kc.get(f"/admin/realms/{realm}/roles/{ROLE_USER}")
+            kc.post(f"/admin/realms/{realm}/users/{sa_user['id']}/role-mappings/realm", [role])
+            print(f"verify: service account granted {ROLE_USER}")
+        client_secret = kc.get(f"/admin/realms/{realm}/clients/{client['id']}/client-secret")["value"]
+
+        form = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": VERIFY_CLIENT,
+                "client_secret": client_secret,
+                "scope": "openid",  # the backend's JWTVerifier requires the openid scope
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/realms/{realm}/protocol/openid-connect/token", data=form, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as res:
+                access_token = json.load(res)["access_token"]
+        except urllib.error.HTTPError as exc:
+            print(f"verify: token request failed: HTTP {exc.code}: {exc.read().decode(errors='replace')[:300]}")
+            return False
+
+        claims = _jwt_claims(access_token)
+        aud = claims.get("aud", [])
+        aud = [aud] if isinstance(aud, str) else list(aud)
+        roles = claims.get("realm_access", {}).get("roles", [])
+        scope = claims.get("scope", "")
+        print(f"verify: token iss={claims.get('iss')} aud={aud} scope={scope!r} realm_roles={roles}")
+        if API_CLIENT not in aud:
+            print(f"verify: WARNING aud lacks {API_CLIENT}; check the audience mapper, not the backend")
+        if ROLE_USER not in roles:
+            print(f"verify: WARNING realm_access.roles lacks {ROLE_USER}")
+        if "openid" not in scope.split():
+            print("verify: WARNING scope lacks openid; the backend requires it")
+
+        api = public_url.rstrip("/")
+        user_status = _http_status(f"{api}/api/v1/model/info", access_token)
+        admin_status = _http_status(f"{api}/api/v1/system/info", access_token)
+        print(f"verify: GET /api/v1/model/info  -> {user_status} (expected 200)")
+        print(f"verify: GET /api/v1/system/info -> {admin_status} (expected 403)")
+        ok = user_status == 200 and admin_status == 403
+    finally:
+        kc.delete(f"/admin/realms/{realm}/clients/{client['id']}")
+        print(f"client {VERIFY_CLIENT}: deleted")
+    return ok
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--grant-admin", metavar="USERNAME", help="give this realm user the holy-moly-admin role")
     parser.add_argument("--create-user", metavar="USERNAME", help="create this realm user if missing")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help=f"end-to-end check: temporary client {VERIFY_CLIENT} with a service account, token, two backend calls",
+    )
     args = parser.parse_args()
 
     base_url = env("KC_URL")
@@ -289,6 +396,7 @@ def main() -> None:
         create_user(kc, realm, args.create_user)
     if args.grant_admin:
         grant_admin(kc, realm, args.grant_admin)
+    verified = verify(kc, base_url, realm, public_url) if args.verify else None
 
     print()
     print("Backend configuration for holy-moly-web:")
@@ -296,6 +404,8 @@ def main() -> None:
     print(f"  HOLY_MOLY_OIDC_AUDIENCE={API_CLIENT}")
     print(f"  HOLY_MOLY_PUBLIC_URL={public_url}")
     print(f"Discovery: {base_url.rstrip('/')}/realms/{realm}/.well-known/openid-configuration")
+    if verified is False:
+        sys.exit("verify: FAILED")
 
 
 if __name__ == "__main__":
