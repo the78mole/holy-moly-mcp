@@ -24,7 +24,7 @@ stammen aus der Keycloak-Dokumentation und sind beim Einrichten des Realms gegen
 | --- | --- | --- |
 | 0 | erledigt | `fastmcp>=4.1,<5` in beiden Paketen gepinnt, `argon2-cffi` ergänzt, `uv.lock` aktualisiert (fastmcp 4.1.0, mcp 2.3.0) |
 | 1 | erledigt | `server/holy_moly_server/auth.py` (Config, `HashedTokenVerifier`, `build_auth`, FastAPI-Dependencies, Startabbruch), `local_accounts.py` (Login, `/auth/config`, Limiter, Hash-CLI), alle REST-Routen abgesichert, 24 Tests in `server/tests/test_auth.py` |
-| 2 | erledigt | `RemoteAuthProvider`/`KeycloakAuthProvider` werden aus `HOLY_MOLY_OIDC_*` gebaut; Realm `holy-moly` auf keycloak.bizzmark.io per `scripts/keycloak_setup.py` angelegt (2026-10-18), Nutzer `daniel` mit `holy-moly-admin`; `--verify` gegen die Live-Instanz: 200/403 |
+| 2 | erledigt | `RemoteAuthProvider`/`KeycloakAuthProvider` werden aus `HOLY_MOLY_OIDC_*` gebaut. Seit 2026-10-18 abends läuft holy-moly im gemeinsamen Realm `chaintronics` (AD-Anbindung, Single Sign-On): Rollen, Clients `holy-moly-web`/`holy-moly-api` und Audience-Mapper per `scripts/keycloak_setup.py` dort angelegt, AD-Nutzer `daniel` mit beiden Rollen, `--verify`: 200/403. Der eigene Realm `holy-moly` ist gelöscht |
 | 3 | erledigt | `frontend/src/auth.js` (Konfig von `/auth/config`, `oidc-client-ts` mit PKCE und Silent Renew, lokaler Login, `apiFetch`, `sseStream`), `LoginView.vue`, `App.vue` mit Login-Gate, Benutzer/Abmelden in der Sidebar, Modellwechsel nur für `holy-moly-admin`; TTS-Audio wird per `apiFetch` geladen und als Blob-URL abgespielt, weil `<audio>` keine Header senden kann |
 | 4 | erledigt | `mcp_http.mount_mcp()` hängt `create_server(http=True).http_app()` unter `/mcp-server` in die FastAPI-App, Lifespans verkettet, RFC-9728-Route an der Wurzel; `resource_base_url` zeigt auf `/mcp-server`, damit Metadata und `WWW-Authenticate` den Endpunkt nennen. Tests in `test_mcp_http.py` und `test_mcp_server_auth.py` |
 | 7 | erledigt | Persönliche API-Tokens: `token_store.py` (SQLite im Volume `holy-moly-data`, nur SHA-256-Hashes), `api_tokens.py` (`/api/v1/auth/tokens`), `PersonalTokenVerifier` im `MultiAuth`, Panel „API-Tokens“ in der Web-UI. Tests in `test_api_tokens.py` |
@@ -140,7 +140,18 @@ Warum nicht Keycloak-Introspection oder einen Auth-Proxy (oauth2-proxy) vor dem 
 
 ## 4. Keycloak-Setup
 
-Realm `holy-moly` (oder ein bestehender Realm), zwei Clients, zwei Realm-Rollen.
+**Umgesetzt im gemeinsamen Realm `chaintronics`** (Daniels privater Realm mit AD-Anbindung), nicht in einem
+eigenen Realm: so gilt das Single Sign-On des Realms auch für holy-moly. Zwei Clients, zwei Realm-Rollen.
+Konsequenzen für einen gemeinsamen Realm, die `scripts/keycloak_setup.py` umsetzt:
+
+- Realm-Einstellungen (Token-Laufzeiten, Brute-Force-Schutz) werden nicht angefasst; nur mit `--manage-realm-settings`.
+- `holy-moly-user` ist **keine** Default-Rolle: nicht jeder Realm-Nutzer darf konvertieren. Zugriff wird je Nutzer
+  mit `--grant-user NAME` oder `--grant-admin NAME` vergeben (AD-Nutzer erscheinen nach dem ersten Login oder per
+  LDAP-Sync im Realm). Mit `--default-user-role` ließe sich das umkehren.
+- Admin-Zugang: der Service-Account `svc-admin` des Realms (OpenBao `it-infra`, `secret/keycloak-svc-admin`,
+  `KC_ADMIN_REALM=chaintronics`). Realm anlegen oder löschen braucht den Master-Admin (`secret/keycloak-master-admin`).
+
+Die folgenden Unterabschnitte beschreiben die Objekte; die Realm-Namen in Beispielen sind durch `chaintronics` zu ersetzen.
 
 ### 4.1 Client `holy-moly-web` (SPA)
 
@@ -171,7 +182,7 @@ Ohne diesen Mapper schlägt `JWTVerifier(audience="holy-moly-api")` jedes Token 
 
 | Rolle | Ort | Wer | Darf |
 | --- | --- | --- | --- |
-| `holy-moly-user` | Realm-Rolle | alle Nutzer, Default-Rolle des Realms | alle `convert/*`- und `tts/*`-Lese-Endpunkte, alle MCP-Tools |
+| `holy-moly-user` | Realm-Rolle | per `--grant-user` vergeben (im gemeinsamen Realm keine Default-Rolle) | alle `convert/*`- und `tts/*`-Lese-Endpunkte, alle MCP-Tools |
 | `holy-moly-admin` | Realm-Rolle | Daniel | zusätzlich `*/model/load`, `/api/v1/system/info` |
 
 Realm-Rollen landen im Access-Token unter `realm_access.roles`; Client-Rollen unter

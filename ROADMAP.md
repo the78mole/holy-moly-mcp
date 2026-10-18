@@ -10,9 +10,6 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
       oder API-Feld, gleiche Option im MCP-Tool. Erster Satz: `default`, `report` (Deckblatt,
       Inhaltsverzeichnis, Seitenzahlen), `letter` (DIN 5008), `minutes`, `plain`.
       Mermaid bleibt im Browser gerendert, das Backend bettet fertiges HTML nur ein.
-- [ ] **Keycloak: AD-Anmeldung** – Entscheidung offen: Clients in den Realm `chaintronics` umziehen,
-      Identity Brokering, oder LDAP-Federation direkt im Realm `holy-moly`. Für den Umzug muss
-      `scripts/keycloak_setup.py` bestehende Realm-Einstellungen unangetastet lassen.
 - [ ] **Betrieb der Auth-Schicht abschließen** (Phase 6) – API-Token und lokales Admin-Konto von der
       Credentials-Datei auf dem Host nach OpenBao/KeePass, Dev-Origins aus der CORS-Liste, Test-Container
       `holy-moly-authtest` auf dockerapps entfernen.
@@ -44,6 +41,8 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 
 ## Erledigt
 
+- 2026-10-18 **Keycloak: Umzug in den Realm `chaintronics`** – Single Sign-On mit dem AD-Konto; Rollen werden je Nutzer
+  vergeben (`scripts/keycloak_setup.py --grant-user`), eigener Realm `holy-moly` gelöscht.
 - 2026-10-18 **STT-Benchmark** – Admin-Knopf misst alle heruntergeladenen Whisper-Modelle mit einem
   mitgelieferten 15-s-Sample; Ergebnis „s je Minute Audio“ je Modell, Gerät und Rechentyp in SQLite, Anzeige in
   der Modellkarte. **Modell-Cache** – korrekte Erkennung (large-v3-turbo), Entfernen-Knopf für Whisper und Kokoro.
