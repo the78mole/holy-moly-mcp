@@ -27,10 +27,12 @@ from holy_moly_server.mcp_http import mount_mcp
 from holy_moly_server.mcp_server import create_server
 from holy_moly_server.services.converter import (
     MODEL_METADATA,
+    delete_model_cache,
     get_active_model_name,
     get_available_languages,
     get_available_models,
     get_model_cache_path,
+    get_model_cache_size_mb,
     get_model_status,
     is_model_cached,
     process_audio,
@@ -40,6 +42,7 @@ from holy_moly_server.services.converter import (
 from holy_moly_server.services.md_to_pdf import convert_html_to_pdf
 from holy_moly_server.services.pdf_converter import convert_pdf_bytes, convert_pdf_from_url
 from holy_moly_server.services.tts_local import (
+    delete_tts_model_cache,
     get_ogg_path,
     get_tts_model_info,
     get_tts_model_status,
@@ -197,6 +200,7 @@ async def model_info():
                 "name": m,
                 "cached": is_model_cached(m),
                 "path": get_model_cache_path(m),
+                "size_on_disk_mb": get_model_cache_size_mb(m),
                 **MODEL_METADATA.get(m, {}),
             }
             for m in get_available_models()
@@ -213,6 +217,18 @@ async def model_load(model: str = Body(..., embed=True)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "loading", "model": model}
+
+
+@app.delete("/api/v1/model/cache/{model_name}", tags=["Model"], **AS_ADMIN)
+async def model_cache_delete(model_name: str):
+    """Remove a downloaded Whisper model from the cache volume (not the active one)."""
+    try:
+        freed_mb = await asyncio.to_thread(delete_model_cache, model_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted", "model": model_name, "freed_mb": freed_mb}
 
 
 @app.get("/api/v1/system/info", tags=["System"], **AS_ADMIN)
@@ -406,6 +422,18 @@ async def tts_model_status():
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.delete("/api/v1/tts/model/cache/{model_name}", tags=["Text-to-Speech"], **AS_ADMIN)
+async def tts_model_cache_delete(model_name: str):
+    """Remove a downloaded Kokoro TTS model from the cache volume (not the active one)."""
+    try:
+        freed_mb = await asyncio.to_thread(delete_tts_model_cache, model_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted", "model": model_name, "freed_mb": freed_mb}
 
 
 @app.post("/api/v1/tts/model/load", tags=["Text-to-Speech"], **AS_ADMIN)

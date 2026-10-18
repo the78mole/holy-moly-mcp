@@ -179,6 +179,35 @@ async function applyModelSelection() {
   connectModelStatus()
 }
 
+// ── Model cache removal (admin) ─────────────────────────────────────────────
+
+const cacheBusy = ref(false)
+
+async function _deleteCache(path, label, refresh) {
+  if (!confirm(`${label} aus dem Cache löschen? Die Dateien müssen beim nächsten Aktivieren erneut heruntergeladen werden.`)) return
+  cacheBusy.value = true
+  try {
+    const res = await apiFetch(path, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    await refresh()
+  } catch (e) {
+    alert(`Löschen fehlgeschlagen: ${e.message}`)
+  } finally {
+    cacheBusy.value = false
+  }
+}
+
+function removeModelCache() {
+  if (!selectedModel.value) return
+  return _deleteCache(`/api/v1/model/cache/${encodeURIComponent(selectedModel.value)}`, `Whisper-Modell „${selectedModel.value}"`, fetchModelInfo)
+}
+
+function removeTtsModelCache() {
+  if (!selectedTtsModel.value) return
+  return _deleteCache(`/api/v1/tts/model/cache/${encodeURIComponent(selectedTtsModel.value)}`, `TTS-Modell „${selectedTtsModel.value}"`, fetchTtsModelInfo)
+}
+
 // ── SSE ─────────────────────────────────────────────────────────────────────
 
 function connectModelStatus() {
@@ -885,6 +914,15 @@ async function downloadOgg() {
                   <span v-if="modelLoading" class="spinner" />
                   {{ selectedModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
                 </button>
+                <button
+                  v-if="isAdmin && selectedModelMeta?.cached && selectedModel !== activeModel"
+                  class="btn-load btn-load--remove"
+                  :disabled="modelLoading || cacheBusy"
+                  :title="`Modelldateien löschen (${formatSize(selectedModelMeta.size_on_disk_mb)})`"
+                  @click="removeModelCache"
+                >
+                  Entfernen
+                </button>
                 <div class="model-debug">
                   <span
                     v-for="m in availableModels"
@@ -1058,6 +1096,15 @@ async function downloadOgg() {
                   @click="applyTtsModelSelection">
                   <span v-if="ttsModelLoading" class="spinner" />
                   {{ selectedTtsModelMeta?.cached ? 'Aktivieren' : 'Herunterladen' }}
+                </button>
+                <button
+                  v-if="isAdmin && selectedTtsModelMeta?.cached && selectedTtsModel !== activeTtsModel"
+                  class="btn-load btn-load--remove"
+                  :disabled="ttsModelLoading || cacheBusy"
+                  :title="`Modelldatei löschen (${formatSize(selectedTtsModelMeta.size_on_disk_mb)})`"
+                  @click="removeTtsModelCache"
+                >
+                  Entfernen
                 </button>
                 <div class="model-debug">
                   <span v-for="m in availableTtsModels" :key="m.name" class="model-chip"
@@ -2436,6 +2483,17 @@ pre {
 .btn-load--download {
   border-color: #b45309;
   color: #fbbf24;
+}
+
+.btn-load--remove {
+  background: transparent;
+  border: 1px solid #3b2a5c;
+  color: #c4a7e7;
+}
+
+.btn-load--remove:hover:not(:disabled) {
+  background: #2a1d44;
+  color: #e0c4ff;
 }
 
 .btn-load--download:hover:not(:disabled) {
