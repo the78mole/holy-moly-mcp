@@ -36,6 +36,17 @@ werden in `create_server(http=True)` gesetzt. Grund: FastMCP blendet Tools mit `
 aus, sobald kein Bearer-Token im Kontext ist, und das trifft den stdio-Server und In-Memory-Clients.
 Die Tool-Funktionen sind deshalb einfache Funktionen, die die Factory registriert.
 
+Zweite Abweichung: der Keycloak-`JWTVerifier` verlangt **keinen** Scope mehr (`required_scopes=[]`),
+und `MultiAuth` bekommt `required_scopes=[]` explizit. Grund: `MultiAuth` erbt sonst die
+Scope-Anforderung des Servers, und die MCP-Auth-Middleware lehnt dann jedes Token ohne OAuth-Scopes
+mit `insufficient_scope` ab, also alle persönlichen, statischen und lokalen Tokens. Beim Deployment
+am 2026-10-18 war genau das der erste Fehler; `test_mcp_http.py` deckt es seither ab.
+
+Verifiziert am 2026-10-18 auf der Live-Instanz: Claude Code verbindet sich per
+`"type": "http"` mit einem persönlichen Token (`"headers": {"Authorization": "Bearer ${HOLY_MOLY_TOKEN}"}`)
+und listet beide Tools; ohne Token kommt 401 mit `resource_metadata` auf
+`/.well-known/oauth-protected-resource/mcp-server/mcp`, das Dokument nennt den Keycloak-Realm.
+
 ## 1. Ausgangslage
 
 holy-moly-mcp hat heute keinerlei Authentifizierung. Das funktioniert nur, weil der Dienst auf
