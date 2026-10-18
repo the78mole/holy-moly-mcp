@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Create or update the Keycloak realm for holy-moly-web (docs/auth-oidc-and-tokens.md, section 4).
+
+Idempotent: every object is created only if missing and otherwise updated in place.
+Standard library only, so it runs anywhere with Python 3.10+.
+
+Environment:
+    KC_URL              Keycloak base URL, e.g. https://keycloak.example.com
+    KC_ADMIN_USER       admin user in the master realm           (or KC_ADMIN_TOKEN)
+    KC_ADMIN_PASSWORD   its password                             (or KC_ADMIN_TOKEN)
+    KC_ADMIN_TOKEN      alternatively a ready admin access token
+    KC_REALM            realm to create/update            (default: holy-moly)
+    HOLY_MOLY_PUBLIC_URL  public URL of holy-moly-web, used for redirect URIs and web origins
+    HOLY_MOLY_DEV_ORIGIN  extra dev origin                 (default: http://localhost:5173)
+
+Usage:
+    python scripts/keycloak_setup.py                 # create/update realm, roles, clients, mapper
+    python scripts/keycloak_setup.py --grant-admin daniel   # also give realm user 'daniel' the admin role
+    python scripts/keycloak_setup.py --create-user daniel   # create the user if missing (temporary password printed)
+
+Never pass secrets on the command line; read them from the environment (e.g. `bao kv get -field=...`).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import secrets
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROLE_USER = "holy-moly-user"
+ROLE_ADMIN = "holy-moly-admin"
+WEB_CLIENT = "holy-moly-web"
+API_CLIENT = "holy-moly-api"
+
+
+def env(name: str, default: str | None = None) -> str:
+    value = os.environ.get(name, default)
+    if value is None or value == "":
+        sys.exit(f"missing environment variable {name}")
+    return value
+
+
+class Keycloak:
+    def __init__(self, base_url: str, token: str):
+        self.base = base_url.rstrip("/")
+        self.token = token
+
+    def _request(self, method: str, path: str, body: dict | list | None = None, *, raw: bool = False):
+        url = f"{self.base}{path}"
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"Bearer {self.token}")
+        req.add_header("Accept", "application/json")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as res:
+                payload = res.read()
+                if raw:
+                    return res
+                return json.loads(payload) if payload else None
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            sys.exit(f"{method} {path} -> HTTP {exc.code}: {detail[:400]}")
+
+    def get(self, path: str):
+        return self._request("GET", path)
+
+    def post(self, path: str, body):
+        return self._request("POST", path, body)
+
+    def put(self, path: str, body):
+        return self._request("PUT", path, body)
+
+    def delete(self, path: str):
+        return self._request("DELETE", path)
+
+
+def admin_token(base_url: str) -> str:
+    if os.environ.get("KC_ADMIN_TOKEN"):
+        return os.environ["KC_ADMIN_TOKEN"]
+    form = urllib.parse.urlencode(
+        {
+            "grant_type": "password",
+            "client_id": "admin-cli",
+            "username": env("KC_ADMIN_USER"),
+            "password": env("KC_ADMIN_PASSWORD"),
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/realms/master/protocol/openid-connect/token", data=form, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            return json.load(res)["access_token"]
+    except urllib.error.HTTPError as exc:
+        sys.exit(f"admin login failed: HTTP {exc.code}: {exc.read().decode(errors='replace')[:300]}")
+
+
+def ensure_realm(kc: Keycloak, realm: str) -> None:
+    existing = {r["realm"] for r in kc.get("/admin/realms")}
+    desired = {
+        "realm": realm,
+        "enabled": True,
+        "displayName": "Holy Moly",
+        "accessTokenLifespan": 900,  # 15 min; the SPA refreshes silently
+        "ssoSessionIdleTimeout": 8 * 3600,
+        "ssoSessionMaxLifespan": 24 * 3600,
+        "revokeRefreshToken": True,
+        "refreshTokenMaxReuse": 0,
+        "bruteForceProtected": True,
+        "sslRequired": "external",
+    }
+    if realm in existing:
+        kc.put(f"/admin/realms/{realm}", desired)
+        print(f"realm {realm}: updated")
+    else:
+        kc.post("/admin/realms", desired)
+        print(f"realm {realm}: created")
+
+
+def ensure_roles(kc: Keycloak, realm: str) -> None:
+    roles = {r["name"]: r for r in kc.get(f"/admin/realms/{realm}/roles")}
+    for name, description in (
+        (ROLE_USER, "May use every conversion endpoint and MCP tool"),
+        (ROLE_ADMIN, "May switch the globally loaded STT/TTS models"),
+    ):
+        if name not in roles:
+            kc.post(f"/admin/realms/{realm}/roles", {"name": name, "description": description})
+            print(f"role {name}: created")
+        else:
+            print(f"role {name}: exists")
+
+    # Every user of the realm gets holy-moly-user automatically via the realm's default role.
+    realm_rep = kc.get(f"/admin/realms/{realm}")
+    default_role_name = realm_rep["defaultRole"]["name"]
+    composites = {r["name"] for r in kc.get(f"/admin/realms/{realm}/roles/{default_role_name}/composites")}
+    if ROLE_USER not in composites:
+        user_role = kc.get(f"/admin/realms/{realm}/roles/{ROLE_USER}")
+        kc.post(f"/admin/realms/{realm}/roles/{default_role_name}/composites", [user_role])
+        print(f"default role {default_role_name}: now includes {ROLE_USER}")
+    else:
+        print(f"default role {default_role_name}: already includes {ROLE_USER}")
+
+
+def _client_by_id(kc: Keycloak, realm: str, client_id: str) -> dict | None:
+    found = kc.get(f"/admin/realms/{realm}/clients?clientId={urllib.parse.quote(client_id)}")
+    return found[0] if found else None
+
+
+def ensure_client(kc: Keycloak, realm: str, rep: dict) -> dict:
+    existing = _client_by_id(kc, realm, rep["clientId"])
+    if existing is None:
+        kc.post(f"/admin/realms/{realm}/clients", rep)
+        existing = _client_by_id(kc, realm, rep["clientId"])
+        print(f"client {rep['clientId']}: created")
+    else:
+        kc.put(f"/admin/realms/{realm}/clients/{existing['id']}", {**existing, **rep})
+        print(f"client {rep['clientId']}: updated")
+    return existing
+
+
+def ensure_web_client(kc: Keycloak, realm: str, public_url: str, dev_origin: str) -> dict:
+    origins = [public_url] + ([dev_origin] if dev_origin else [])
+    rep = {
+        "clientId": WEB_CLIENT,
+        "name": "Holy Moly Web UI",
+        "protocol": "openid-connect",
+        "publicClient": True,  # no client secret: SPA with PKCE
+        "standardFlowEnabled": True,
+        "directAccessGrantsEnabled": False,
+        "implicitFlowEnabled": False,
+        "serviceAccountsEnabled": False,
+        "redirectUris": [f"{o}/*" for o in origins],
+        "postLogoutRedirectUris": [f"{o}/*" for o in origins],
+        "webOrigins": origins,
+        "rootUrl": public_url,
+        "baseUrl": public_url,
+        "attributes": {
+            "pkce.code.challenge.method": "S256",
+            "post.logout.redirect.uris": "##".join(f"{o}/*" for o in origins),
+        },
+        "defaultClientScopes": ["openid", "profile", "email", "roles", "web-origins", "basic"],
+    }
+    client = ensure_client(kc, realm, rep)
+
+    # Audience mapper: without it the access token's `aud` never contains holy-moly-api and the
+    # backend's JWTVerifier(audience="holy-moly-api") rejects every token.
+    mappers = kc.get(f"/admin/realms/{realm}/clients/{client['id']}/protocol-mappers/models")
+    mapper = {
+        "name": "audience holy-moly-api",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "config": {
+            "included.client.audience": API_CLIENT,
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+        },
+    }
+    existing = next((m for m in mappers if m["name"] == mapper["name"]), None)
+    if existing is None:
+        kc.post(f"/admin/realms/{realm}/clients/{client['id']}/protocol-mappers/models", mapper)
+        print("audience mapper: created")
+    else:
+        kc.put(f"/admin/realms/{realm}/clients/{client['id']}/protocol-mappers/models/{existing['id']}", {**existing, **mapper})
+        print("audience mapper: updated")
+    return client
+
+
+def ensure_api_client(kc: Keycloak, realm: str) -> dict:
+    rep = {
+        "clientId": API_CLIENT,
+        "name": "Holy Moly API (audience only)",
+        "protocol": "openid-connect",
+        "publicClient": False,
+        "bearerOnly": True,  # never logs anyone in; only the token audience
+        "standardFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "implicitFlowEnabled": False,
+        "serviceAccountsEnabled": False,
+    }
+    return ensure_client(kc, realm, rep)
+
+
+def create_user(kc: Keycloak, realm: str, username: str) -> None:
+    found = kc.get(f"/admin/realms/{realm}/users?username={urllib.parse.quote(username)}&exact=true")
+    if found:
+        print(f"user {username}: exists")
+        return
+    temp_password = secrets.token_urlsafe(16)
+    kc.post(
+        f"/admin/realms/{realm}/users",
+        {
+            "username": username,
+            "enabled": True,
+            "credentials": [{"type": "password", "value": temp_password, "temporary": True}],
+            "requiredActions": ["UPDATE_PASSWORD"],
+        },
+    )
+    print(f"user {username}: created with a temporary password (must be changed at first login):")
+    print(f"  {temp_password}")
+
+
+def grant_admin(kc: Keycloak, realm: str, username: str) -> None:
+    found = kc.get(f"/admin/realms/{realm}/users?username={urllib.parse.quote(username)}&exact=true")
+    if not found:
+        sys.exit(f"user {username!r} not found in realm {realm}; create it first (--create-user) or federate it")
+    user_id = found[0]["id"]
+    current = {r["name"] for r in kc.get(f"/admin/realms/{realm}/users/{user_id}/role-mappings/realm")}
+    if ROLE_ADMIN in current:
+        print(f"user {username}: already has {ROLE_ADMIN}")
+        return
+    role = kc.get(f"/admin/realms/{realm}/roles/{ROLE_ADMIN}")
+    kc.post(f"/admin/realms/{realm}/users/{user_id}/role-mappings/realm", [role])
+    print(f"user {username}: granted {ROLE_ADMIN}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--grant-admin", metavar="USERNAME", help="give this realm user the holy-moly-admin role")
+    parser.add_argument("--create-user", metavar="USERNAME", help="create this realm user if missing")
+    args = parser.parse_args()
+
+    base_url = env("KC_URL")
+    realm = os.environ.get("KC_REALM", "holy-moly")
+    public_url = env("HOLY_MOLY_PUBLIC_URL").rstrip("/")
+    dev_origin = os.environ.get("HOLY_MOLY_DEV_ORIGIN", "http://localhost:5173").rstrip("/")
+
+    kc = Keycloak(base_url, admin_token(base_url))
+    ensure_realm(kc, realm)
+    ensure_roles(kc, realm)
+    ensure_api_client(kc, realm)
+    ensure_web_client(kc, realm, public_url, dev_origin)
+    if args.create_user:
+        create_user(kc, realm, args.create_user)
+    if args.grant_admin:
+        grant_admin(kc, realm, args.grant_admin)
+
+    print()
+    print("Backend configuration for holy-moly-web:")
+    print(f"  HOLY_MOLY_OIDC_REALM_URL={base_url.rstrip('/')}/realms/{realm}")
+    print(f"  HOLY_MOLY_OIDC_AUDIENCE={API_CLIENT}")
+    print(f"  HOLY_MOLY_PUBLIC_URL={public_url}")
+    print(f"Discovery: {base_url.rstrip('/')}/realms/{realm}/.well-known/openid-configuration")
+
+
+if __name__ == "__main__":
+    main()
