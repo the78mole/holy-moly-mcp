@@ -801,13 +801,6 @@ async function downloadOgg() {
             <span class="nav-item__icon">📝</span> Markdown → PDF
           </button>
         </template>
-        <button
-          class="nav-item"
-          :class="{ 'nav-item--active': activeSection === 'tokens' }"
-          @click="activeSection = 'tokens'"
-        >
-          <span class="nav-item__icon">🔑</span> API-Tokens
-        </button>
         <a class="nav-item" href="/docs" target="_blank" rel="noopener">
           <span class="nav-item__icon">📚</span> API Docs
         </a>
@@ -818,6 +811,14 @@ async function downloadOgg() {
           <span class="sidebar__user-text">{{ auth.user.name }}</span>
           <span v-if="isAdmin" class="sidebar__badge">admin</span>
         </div>
+        <button
+          v-if="auth.status === 'authenticated'"
+          class="nav-item"
+          :class="{ 'nav-item--active': activeSection === 'tokens' }"
+          @click="activeSection = 'tokens'"
+        >
+          <span class="nav-item__icon">🔑</span> API-Tokens
+        </button>
         <button v-if="auth.status === 'authenticated'" class="nav-item" @click="logout">
           <span class="nav-item__icon">⎋</span> Abmelden
         </button>
