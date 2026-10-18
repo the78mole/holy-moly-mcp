@@ -26,7 +26,8 @@ stammen aus der Keycloak-Dokumentation und sind beim Einrichten des Realms gegen
 | 1 | erledigt | `server/holy_moly_server/auth.py` (Config, `HashedTokenVerifier`, `build_auth`, FastAPI-Dependencies, Startabbruch), `local_accounts.py` (Login, `/auth/config`, Limiter, Hash-CLI), alle REST-Routen abgesichert, 24 Tests in `server/tests/test_auth.py` |
 | 2 | erledigt | `RemoteAuthProvider`/`KeycloakAuthProvider` werden aus `HOLY_MOLY_OIDC_*` gebaut; Realm `holy-moly` auf keycloak.bizzmark.io per `scripts/keycloak_setup.py` angelegt (2026-10-18), Nutzer `daniel` mit `holy-moly-admin`; `--verify` gegen die Live-Instanz: 200/403 |
 | 3 | erledigt | `frontend/src/auth.js` (Konfig von `/auth/config`, `oidc-client-ts` mit PKCE und Silent Renew, lokaler Login, `apiFetch`, `sseStream`), `LoginView.vue`, `App.vue` mit Login-Gate, Benutzer/Abmelden in der Sidebar, Modellwechsel nur für `holy-moly-admin`; TTS-Audio wird per `apiFetch` geladen und als Blob-URL abgespielt, weil `<audio>` keine Header senden kann |
-| 4 | vorbereitet | `mcp_server.create_server(http=True)` liefert den Server mit Auth-Provider und Tool-Checks; der Mount in FastAPI (http-transport.md) fehlt noch. 3 Tests in `server/tests/test_mcp_server_auth.py` |
+| 4 | erledigt | `mcp_http.mount_mcp()` hängt `create_server(http=True).http_app()` unter `/mcp-server` in die FastAPI-App, Lifespans verkettet, RFC-9728-Route an der Wurzel; `resource_base_url` zeigt auf `/mcp-server`, damit Metadata und `WWW-Authenticate` den Endpunkt nennen. Tests in `test_mcp_http.py` und `test_mcp_server_auth.py` |
+| 7 | erledigt | Persönliche API-Tokens: `token_store.py` (SQLite im Volume `holy-moly-data`, nur SHA-256-Hashes), `api_tokens.py` (`/api/v1/auth/tokens`), `PersonalTokenVerifier` im `MultiAuth`, Panel „API-Tokens“ in der Web-UI. Tests in `test_api_tokens.py` |
 | 5 | erledigt | `remote/`-Proxy sendet `HOLY_MOLY_API_TOKEN` nur an die API; `.vscode/mcp.json` hat den Passwort-Input; READMEs ergänzt |
 | 6 | teilweise | Nginx Proxy Manager + TLS für holy-moly.intern.chaintronics.com stehen; Keycloak-Admin-Zugang in OpenBao (`it-infra`, `secret/keycloak-master-admin`); offen: OpenBao-Einträge für API-Token/lokales Konto, CORS-Dev-Origins |
 
@@ -428,6 +429,25 @@ Pfad wird aus `base_url` und dem `mcp_path` berechnet, den `http_app()` kennt, u
 Mount-Präfix nicht. Falls nötig `resource_base_url` am Provider explizit setzen.
 
 ## 6. Token-Auth für Maschinen-Clients
+
+### 6.0 Umgesetzt: persönliche API-Tokens pro Nutzer
+
+Statt Tokens von Hand zu hashen und in `HOLY_MOLY_API_TOKENS` zu pflegen, erzeugt jeder angemeldete Nutzer
+seine Tokens selbst in der Web-UI (Navigationspunkt „API-Tokens“) oder per `POST /api/v1/auth/tokens`.
+
+- Format `hm_` + 43 Zeichen; der Klartext wird genau einmal angezeigt. Gespeichert werden SHA-256-Hash,
+  Name, Präfix (12 Zeichen zur Wiedererkennung), Besitzer (`sub`), Rollen, Erstellt/Ablauf/Zuletzt benutzt.
+- Ablage: SQLite unter `HOLY_MOLY_DATA_DIR` (`/app/data`, Compose-Volume `holy-moly-data`), Datei mit Rechten 600.
+- Rollen: ein Token erbt die Rollen seines Besitzers zum Erstellzeitpunkt; eine Teilmenge ist wählbar
+  (Admins erstellen standardmäßig Tokens ohne Admin-Rechte). Es kann nie mehr als der Besitzer.
+- Nur interaktive Sitzungen (Keycloak oder lokales Konto) dürfen Tokens erstellen oder widerrufen. Ein Token
+  kann keine weiteren Tokens erzeugen, ebenso wenig ein statisches `HOLY_MOLY_API_TOKENS`-Token.
+- Widerrufen wirkt sofort; `DELETE …?purge=true` entfernt den Eintrag aus der Liste. Admins sehen mit
+  `GET /api/v1/auth/tokens?all=true` alle Tokens und dürfen jedes widerrufen. Höchstens 50 aktive pro Nutzer.
+- Verifikation: `PersonalTokenVerifier` steht im `MultiAuth` an erster Stelle; `last_used_at` wird höchstens
+  einmal pro Minute geschrieben.
+
+Die statische Variante unten bleibt für Deployments ohne Web-Login und als Bootstrap erhalten.
 
 ### 6.1 Token-Format und Ausgabe
 

@@ -5,10 +5,6 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 
 ## Als Nächstes
 
-- [ ] **MCP über HTTP** – `mcp.http_app()` in die FastAPI-App mounten, mit `create_server(http=True)`
-      (Auth-Provider und Rollen-Checks), Well-known-Routen für RFC 9728 an der Wurzel.
-      Konzept: [docs/http-transport.md](docs/http-transport.md), Auth-Phase 4 in
-      [docs/auth-oidc-and-tokens.md](docs/auth-oidc-and-tokens.md).
 - [ ] **PDF-Templates für Markdown → PDF** – Template-Verzeichnis am Server (Jinja2-HTML + CSS +
       Logo/Fonts, per Volume eingebunden), Auswahl über Front-Matter (`template:`, `title:`, `author:`)
       oder API-Feld, gleiche Option im MCP-Tool. Erster Satz: `default`, `report` (Deckblatt,
@@ -36,6 +32,7 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
       Auth-Schicht.
 - [ ] **PDF → Markdown im lokalen MCP-Server** – `convert_pdf_to_markdown` in `mcp_server.py` ist noch
       ein Platzhalter; der Remote-Proxy kann es bereits über die API.
+- [ ] **Token-Verwaltung für Admins in der UI** – alle Tokens sehen und widerrufen (API kann es bereits).
 - [ ] **Benutzerverwaltung lokaler Konten** – bisher nur per Datei; eine kleine Admin-Ansicht in der
       Web-UI zum Anlegen, Sperren und Rollen setzen.
 - [ ] **Vorlagen-Upload** – eigene PDF-Templates über die Web-UI hochladen, sobald das Template-System
@@ -45,6 +42,9 @@ Historie, Details zu größeren Themen liegen in `docs/`. Stand: 2026-10-18.
 
 ## Erledigt
 
+- 2026-10-18 **MCP über HTTP** – Endpunkt `/mcp-server/mcp` in der FastAPI-App, RFC-9728-Metadata, gleiche
+  Auth wie die REST-API. **Persönliche API-Tokens** – pro Nutzer in der Web-UI erstellen und widerrufen,
+  SQLite im Volume `holy-moly-data`.
 - 2026-10-18 **Authentifizierung** – Keycloak-OIDC, statische API-Tokens, lokale Konten; Login in der
   Web-UI, Bearer-Tokens im Remote-Proxy, Realm `holy-moly` auf keycloak.bizzmark.io, Proxy-Host
   `holy-moly.intern.chaintronics.com` mit TLS. Siehe [docs/auth-oidc-and-tokens.md](docs/auth-oidc-and-tokens.md).

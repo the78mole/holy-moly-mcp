@@ -36,6 +36,11 @@ RUN uv pip install --system --no-deps .
 # container re-creation (see docker-compose.yml).
 VOLUME /root/.cache/datalab
 
+# Personal API tokens (SQLite); docker-compose mounts a named volume here.
+RUN mkdir -p /app/data
+ENV HOLY_MOLY_DATA_DIR=/app/data
+VOLUME /app/data
+
 COPY --from=frontend-builder /repo/server/dist /app/dist
 ENV HOLY_MOLY_DIST_DIR=/app/dist
 

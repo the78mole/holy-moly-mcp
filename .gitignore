@@ -13,6 +13,9 @@ frontend/node_modules/
 frontend/dist/
 dist/
 
+# Personal API token database (local runs)
+server/data/
+
 # Local environment files and secrets
 .env
 secrets/

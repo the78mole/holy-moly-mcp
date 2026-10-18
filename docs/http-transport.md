@@ -1,5 +1,9 @@
 # Serving MCP over HTTP
 
+> **Status 2026-10-18: implemented.** `holy_moly_server/mcp_http.py` mounts the server at
+> `/mcp-server/mcp`; authentication (bearer tokens, Keycloak) is described in
+> [auth-oidc-and-tokens.md](auth-oidc-and-tokens.md). The rest of this document is the design it was built from.
+
 Implementation guide for exposing the conversion tools over the MCP *Streamable HTTP*
 transport, in addition to the existing stdio servers.
 

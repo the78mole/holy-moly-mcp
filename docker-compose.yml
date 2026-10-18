@@ -24,10 +24,13 @@ services:
       # ... or, preferred, from a file mounted as a secret (uncomment here and below):
       # - HOLY_MOLY_LOCAL_USERS_FILE=/run/secrets/holy-moly-local-users
       - HOLY_MOLY_AUTH_DISABLED=${HOLY_MOLY_AUTH_DISABLED:-}
+      # Personal API tokens (SQLite) live here; keep it on a volume.
+      - HOLY_MOLY_DATA_DIR=/app/data
     volumes:
       - ./whisper-models:/models
       # marker-pdf model cache; without this volume ~3 GB are re-downloaded on every re-create
       - marker-models:/root/.cache/datalab
+      - holy-moly-data:/app/data
     # secrets:
     #   - holy-moly-local-users
 
@@ -37,3 +40,4 @@ services:
 
 volumes:
   marker-models:
+  holy-moly-data:

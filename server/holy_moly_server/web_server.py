@@ -11,7 +11,7 @@ import subprocess
 import sys
 import traceback
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -21,8 +21,10 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from holy_moly_server import local_accounts
+from holy_moly_server import api_tokens, local_accounts
 from holy_moly_server.auth import ensure_auth_configured, require_admin, require_user
+from holy_moly_server.mcp_http import mount_mcp
+from holy_moly_server.mcp_server import create_server
 from holy_moly_server.services.converter import (
     MODEL_METADATA,
     get_active_model_name,
@@ -108,12 +110,15 @@ def _get_gpus() -> list[dict]:
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI):  # noqa: ARG001
-    """Refuse to start without auth config, then trigger STT and TTS model loading."""
+async def lifespan(application: FastAPI):
+    """Refuse to start without auth config, start the MCP session manager, then load the models."""
     ensure_auth_configured()
-    await start_model_loading()
-    await start_tts_model_loading()
-    yield
+    async with AsyncExitStack() as stack:
+        # The MCP sub-app's lifespan must run, or /mcp-server/mcp fails on the first request.
+        await stack.enter_async_context(mcp_app.lifespan(application))
+        await start_model_loading()
+        await start_tts_model_loading()
+        yield
 
 
 app = FastAPI(
@@ -139,6 +144,11 @@ app.add_middleware(
 
 # Public auth endpoints: /api/v1/auth/login (local accounts) and /api/v1/auth/config.
 app.include_router(local_accounts.router)
+# Personal API tokens (authenticated): /api/v1/auth/tokens
+app.include_router(api_tokens.router)
+
+# MCP over Streamable HTTP at /mcp-server/mcp, sharing the auth provider with the REST API.
+mcp_app = mount_mcp(app, create_server(http=True))
 
 # Every /api/v1 route below carries one of these. See docs/auth-oidc-and-tokens.md, section 5.3.
 AS_USER = {"dependencies": [Depends(require_user)]}

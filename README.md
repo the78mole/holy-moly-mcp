@@ -147,6 +147,21 @@ the first time this server starts.
 loaded model on the fly if it differs from the current one (adds latency for the first call after
 a switch, and affects concurrent requests — it's a single shared model instance, not a pool).
 
+## MCP over HTTP
+
+`holy-moly-web` also serves the conversion tools as an MCP server over Streamable HTTP at
+`/mcp-server/mcp`, sharing the authentication below. Clients that speak HTTP need no local install:
+
+```bash
+# with a personal API token created in the web UI ("API-Tokens")
+claude mcp add --transport http holy-moly https://holy-moly.example/mcp-server/mcp \
+  --header "Authorization: Bearer hm_..."
+```
+
+VS Code: `"type": "http"`, `"url": ".../mcp-server/mcp"`, `"headers": {"Authorization": "Bearer ..."}`.
+Without a token, the endpoint answers 401 with RFC 9728 protected-resource metadata pointing at the
+Keycloak realm, so OAuth-capable clients can log in interactively. The stdio servers keep working unchanged.
+
 ## Authentication
 
 `holy-moly-web` refuses to start unless at least one credential source is configured (or
@@ -157,7 +172,8 @@ bearer token with the `holy-moly-user` role; model switching and `/api/v1/system
 | Source | Env vars | Notes |
 |---|---|---|
 | Local accounts (fallback, works without an IdP) | `HOLY_MOLY_LOCAL_USERS` or `HOLY_MOLY_LOCAL_USERS_FILE`, `HOLY_MOLY_LOCAL_JWT_SECRET`, `HOLY_MOLY_LOCAL_TOKEN_TTL` | `name:<argon2-hash>:role[,role]` entries; hash with `python -m holy_moly_server.local_accounts hash`; login via `POST /api/v1/auth/login` |
-| Static API tokens (machine clients) | `HOLY_MOLY_API_TOKENS` | `<sha256hex>:<name>:<role[,role]>` entries, semicolon-separated; only hashes on the server |
+| Personal API tokens (per user, web UI) | `HOLY_MOLY_DATA_DIR` (default `/app/data`, volume `holy-moly-data`) | created under "API-Tokens" or `POST /api/v1/auth/tokens`; SQLite with SHA-256 hashes; inherit the owner's roles; revocable |
+| Static API tokens (bootstrap, no web login) | `HOLY_MOLY_API_TOKENS` | `<sha256hex>:<name>:<role[,role]>` entries, semicolon-separated; only hashes on the server |
 | Keycloak OIDC | `HOLY_MOLY_OIDC_REALM_URL`, `HOLY_MOLY_PUBLIC_URL`, `HOLY_MOLY_OIDC_AUDIENCE`, `HOLY_MOLY_OIDC_DCR` | RS256 tokens validated via the realm's JWKS; realm roles under `realm_access.roles` |
 
 Design, Keycloak setup, frontend integration and the remaining steps are described in

@@ -30,9 +30,16 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.auth.providers.keycloak import KeycloakAuthProvider
 from pydantic import AnyHttpUrl
 
+from holy_moly_server.token_store import PersonalTokenVerifier, get_store
+
 ROLE_USER = "holy-moly-user"
 ROLE_ADMIN = "holy-moly-admin"
 LOCAL_ISSUER = "holy-moly-local"
+
+#: Where the MCP Streamable HTTP app is mounted inside the FastAPI app, and its own path.
+#: The public MCP endpoint is therefore <HOLY_MOLY_PUBLIC_URL>/mcp-server/mcp.
+MCP_MOUNT_PATH = "/mcp-server"
+MCP_PATH = "/mcp"
 DEFAULT_AUDIENCE = "holy-moly-api"
 
 ENV_PUBLIC_URL = "HOLY_MOLY_PUBLIC_URL"
@@ -187,6 +194,10 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
     if not config.any_source:
         return None
 
+    # The protected resource is the mounted MCP endpoint, not the site root: RFC 9728 metadata
+    # and the WWW-Authenticate challenge must both name <public_url>/mcp-server/mcp.
+    resource_base = f"{config.public_url}{MCP_MOUNT_PATH}" if config.public_url else None
+
     server = None
     if config.realm_url:
         if not config.public_url:
@@ -197,6 +208,7 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
                 base_url=config.public_url,
                 audience=config.audience,
             )
+            server.resource_base_url = AnyHttpUrl(resource_base)  # constructor has no parameter for it
         else:
             server = RemoteAuthProvider(
                 token_verifier=JWTVerifier(
@@ -208,10 +220,13 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
                 ),
                 authorization_servers=[AnyHttpUrl(config.realm_url)],
                 base_url=config.public_url,
+                resource_base_url=resource_base,
                 resource_name="holy-moly-web",
             )
 
-    verifiers: list[TokenVerifier] = []
+    # Personal API tokens created in the web UI (token_store.py) come first: they are cheap to
+    # check and carry a distinctive prefix.
+    verifiers: list[TokenVerifier] = [PersonalTokenVerifier(get_store())]
     if config.local_enabled and config.local_jwt_secret:
         verifiers.append(
             JWTVerifier(
@@ -224,7 +239,7 @@ def build_auth(config: AuthConfig) -> MultiAuth | None:
     if config.token_spec:
         verifiers.append(HashedTokenVerifier(config.token_spec))
 
-    return MultiAuth(server=server, verifiers=verifiers, base_url=config.public_url)
+    return MultiAuth(server=server, verifiers=verifiers, base_url=config.public_url, resource_base_url=resource_base)
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +293,16 @@ _DEV_TOKEN = AccessToken(
 )
 
 
-def _www_authenticate() -> str:
+def protected_resource_metadata_url() -> str | None:
+    """RFC 9728 metadata URL served for the MCP endpoint (only when an OIDC realm is configured)."""
     if config.oidc_enabled and config.public_url:
-        return f'Bearer resource_metadata="{config.public_url}/.well-known/oauth-protected-resource"'
-    return "Bearer"
+        return f"{config.public_url}/.well-known/oauth-protected-resource{MCP_MOUNT_PATH}{MCP_PATH}"
+    return None
+
+
+def _www_authenticate() -> str:
+    url = protected_resource_metadata_url()
+    return f'Bearer resource_metadata="{url}"' if url else "Bearer"
 
 
 def _unauthorized(detail: str) -> HTTPException:

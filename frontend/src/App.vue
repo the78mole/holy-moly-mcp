@@ -4,6 +4,7 @@ import { marked } from 'marked'
 import hljs from 'highlight.js'
 import mermaid from 'mermaid'
 import LoginView from './LoginView.vue'
+import TokensPanel from './TokensPanel.vue'
 import { auth, apiFetch, sseStream, logout, hasRole, initAuth } from './auth.js'
 
 // ── Configure marked: syntax highlighting + mermaid blocks ─────────────────
@@ -800,6 +801,13 @@ async function downloadOgg() {
             <span class="nav-item__icon">📝</span> Markdown → PDF
           </button>
         </template>
+        <button
+          class="nav-item"
+          :class="{ 'nav-item--active': activeSection === 'tokens' }"
+          @click="activeSection = 'tokens'"
+        >
+          <span class="nav-item__icon">🔑</span> API-Tokens
+        </button>
         <a class="nav-item" href="/docs" target="_blank" rel="noopener">
           <span class="nav-item__icon">📚</span> API Docs
         </a>
@@ -818,6 +826,11 @@ async function downloadOgg() {
 
     <!-- ───────────────────────── Main content ───────────────────────────── -->
     <main class="main-content">
+
+      <!-- ══ API tokens ══════════════════════════════════════════════════ -->
+      <section v-if="activeSection === 'tokens'">
+        <TokensPanel />
+      </section>
 
       <!-- ══ Speech ══════════════════════════════════════════════════════ -->
       <section v-if="activeSection === 'speech'">
